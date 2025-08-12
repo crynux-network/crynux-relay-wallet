@@ -1,2 +1,66 @@
-# crynux-relay-wallet
-The wallet service behind Crynux relay
+# Crynux Relay Wallet
+
+A minimal, security-first wallet service that processes withdrawals for the Crynux Relay. It keeps the system wallet key off the public Relay and applies local risk checks before signing any transaction.
+
+## Crynux Relay (context)
+
+- The Relay dispatches AI tasks and credits task fees to node addresses.
+- Balances are keyed by address, and only that address can request a withdrawal with a valid signature. There is no address binding or address-change operation.
+- Task-fee distribution is off-chain: the Relay database updates each node address balance. A centralized system wallet is only used when paying out withdrawals.
+- For safety, the system wallet holds only enough CNX to cover day-to-day payouts. Operators top up manually when needed. Node operators submit withdrawal requests; once validated, the system wallet sends funds to the requesting node address.
+
+## Why a separate Relay Wallet
+
+- The public Relay API runs on the internet; the system wallet private key must not live there.
+- The Relay Wallet runs in a locked-down environment: no public IP, no inbound access, and a small allowlist of outbound destinations only.
+- The system wallet private key is generated on the Relay Wallet host and backed up manually. It never leaves that machine.
+- The Relay Wallet pulls pending withdrawals from the Relay over a one-way connection, performs local risk checks, signs the transaction, and broadcasts it.
+
+## Network and API access
+
+- The Relay exposes HTTPS APIs to prevent on-path tampering.
+- The Relay Wallet uses an egress IP allowlist to reach only the Relay and a few blockchain nodes.
+- For privacy, the Relay can require an API key so that withdrawal activity is not broadly visible. The data itself is public and not privileged.
+- The Relay Wallet validates a withdrawal by verifying the signature from the requesting node address. A Relay-side signature is not required.
+
+## Withdrawals
+
+- A minimum withdrawal amount is enforced.
+- The Relay may deduct a fee to cover blockchain gas costs.
+
+## Replay protection and ordering
+
+- Each withdrawal carries a timestamp, a strictly increasing sequence number, and a nonce.
+- The Relay Wallet tracks a cursor, detects gaps, rejects out-of-order input, and requires idempotency keys.
+
+## Risk controls
+
+Even with the system wallet key kept offline, an attacker who compromises the Relay could attempt to inject fake withdrawals or manipulate balances.
+
+The Relay Wallet therefore maintains its own local per-address balance by reconstructing it from task-fee distribution logs streamed from the Relay in real time.
+
+Why logs?
+- We do not trust the Relay-reported balance, because a compromised Relay can arbitrarily rewrite that number without leaving reliable traces. We accept additive deltas only. The wallet processes logs strictly by its own cursor and persists the last processed position, so previously applied state cannot be overwritten.
+- Each log represents a single AI task's fee, which is orders of magnitude smaller than a typical address balance. This enables precise safeguards such as per-log maximums and per-interval accrual ceilings, and makes bursts of new-address appearances detectable—without penalizing normal withdrawals.
+- Attack surface reduction: to move large value, an attacker must generate many consistent small logs over time, which is easier to detect and can be halted early; a forged balance snapshot could misstate an entire account instantly.
+
+Alerts:
+  - If a single task-fee log amount is abnormally high, the wallet raises an alert and halts.
+  - If new addresses appear at an unusually high rate, the wallet raises an alert and halts.
+  - If the number of task-fee logs spikes abnormally within a short window, the wallet raises an alert and halts.
+  - Insufficient balance in the system wallet.
+  - Withdrawal amount exceeds locally recorded balance (potentially an attack).
+
+## Notes (scope and exclusions)
+
+1) Slow-drip "log inflation"
+   - Scope: within the Relay alone, this cannot be conclusively decided because the Relay is the only task data source.
+   - Production requirement: pair with an upstream authority (e.g., gateway/billing) that publishes periodic settlement snapshots and reconciles against Relay logs, with tolerance and delay windows; sustained deviations beyond thresholds should auto-fuse withdrawals and alert. This document focuses on Relay/Wallet internals and does not detail the external guard.
+
+2) Daily system-wide cap
+   - The aggregate daily payout limit is effectively enforced by limiting funds kept in the system wallet; no extra mechanism is added here.
+
+3) Per-address withdrawal rate limits
+   - Under this model they do not reduce potential loss for node or system funds, so they are not implemented.
+
+See System Architecture for details: [docs/architecture.md](./docs/architecture.md)

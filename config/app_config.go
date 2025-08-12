@@ -30,10 +30,10 @@ type AppConfig struct {
 	} `mapstructure:"log"`
 
 	Blockchain struct {
-		Account       struct {
-			Address            string `mapstructure:"address"`
-			PrivateKey         string `mapstructure:"private_key"`
-			PrivateKeyFile     string `mapstructure:"private_key_file"`
+		Account struct {
+			Address        string `mapstructure:"address"`
+			PrivateKey     string `mapstructure:"private_key"`
+			PrivateKeyFile string `mapstructure:"private_key_file"`
 		} `mapstructure:"account"`
 	} `mapstructure:"blockchain"`
 }
