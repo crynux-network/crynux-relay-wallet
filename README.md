@@ -1,6 +1,10 @@
 # Crynux Relay Wallet
 
-A minimal, security-first wallet service that processes withdrawals for the Crynux Relay. It keeps the system wallet key off the public Relay and applies local risk checks before signing any transaction.
+A minimal, security-first wallet service for processing withdrawals in the Crynux Relay.
+
+Design goal: maximize protection of user funds even if the Relay is fully compromised.
+
+In the current design, user funds remain safe under that assumption; at worst, a small amount of system-wallet funds may be lost before risk controls trigger and halt payouts during a slow log-inflation attack.
 
 ## Crynux Relay (context)
 
