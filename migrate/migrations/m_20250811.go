@@ -13,6 +13,7 @@ func M20250811(db *gorm.DB) *gormigrate.Gormigrate {
 		gorm.Model
 		Address string        `json:"address" gorm:"uniqueIndex"`
 		Balance models.BigInt `json:"balance" gorm:"type:string;size:255"`
+		BeneficialAddress string `json:"beneficial_address" gorm:"size:255"`
 	}
 
 	return gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
