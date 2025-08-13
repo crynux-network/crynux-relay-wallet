@@ -9,7 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func StartHeartbeat(ctx context.Context) {
+func StartHeartbeat(ctx context.Context) error {
 	log.Infoln("[Heartbeat] Starting heartbeat...")
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -17,9 +17,12 @@ func StartHeartbeat(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			log.Infoln("[Heartbeat] Heartbeat stopped")
-			return
+			return nil
 		case <-ticker.C:
-			alert.SendHeartbeat()
+			if err := alert.SendHeartbeat(); err != nil {
+				log.Errorln("[Heartbeat] Failed to send heartbeat:", err)
+				return err
+			}
 		}
 	}
 }

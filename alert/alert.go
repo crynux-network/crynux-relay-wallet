@@ -1,9 +1,9 @@
 package alert
 
-func SendAlert(alertMessage string) {
-
+func SendAlert(alertMessage string) error {
+	return nil
 }
 
-func SendHeartbeat() {
-
+func SendHeartbeat() error {
+	return nil
 }

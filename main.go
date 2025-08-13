@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crynux_relay_wallet/alert"
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/migrate"
 	"crynux_relay_wallet/tasks"
+	"fmt"
 	"os"
+	"os/signal"
+	"sync"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -41,39 +45,36 @@ func main() {
 	log.Infoln("DB migrations are done!")
 
 	log.Infoln("Starting tasks...")
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
-	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
-	go tasks.StartHeartbeat(heartbeatCtx)
+	var wg sync.WaitGroup
 
-	taskExit := make(chan struct{}, 2)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				taskExit <- struct{}{}
-				return
+	runTask := func(taskName string, taskFunc func(context.Context) error) {
+		wg.Add(1)
+		go func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					log.Errorln(fmt.Sprintf("[Task:%s] panic: %v", taskName, recovered))
+					safeSendAlert(taskName, fmt.Sprintf("[Task:%s] panic: %v", taskName, recovered))
+				}
+				wg.Done()
+			}()
+			if err := taskFunc(ctx); err != nil {
+				log.Errorln(fmt.Sprintf("[Task:%s] error: %v", taskName, err))
+				safeSendAlert(taskName, fmt.Sprintf("[Task:%s] error: %v", taskName, err))
 			}
-			taskExit <- struct{}{}
 		}()
-		tasks.StartSyncRelayAccounts(ctx)
-	}()
+	}
 
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				taskExit <- struct{}{}
-				return
-			}
-			taskExit <- struct{}{}
-		}()
-		tasks.StartProcessWithdrawalRequests(ctx)
-	}()
+	runTask("Heartbeat", tasks.StartHeartbeat)
+	runTask("SyncTaskFeeLogs", tasks.StartSyncTaskFeeLogs)
+	runTask("ProcessWithdrawalRequests", tasks.StartProcessWithdrawalRequests)
 
-	go func() {
-		<-taskExit
-		heartbeatCancel()
-	}()
+	<-ctx.Done()
+	log.Infoln("Shutdown signal received, stopping tasks...")
+	wg.Wait()
+	log.Infoln("All tasks stopped")
 }
 
 func startDBMigration() {
@@ -86,5 +87,17 @@ func startDBMigration() {
 			log.Errorln(err.Error())
 		}
 		os.Exit(1)
+	}
+}
+
+func safeSendAlert(taskName, msg string) {
+	defer func() {
+		if alertRecovered := recover(); alertRecovered != nil {
+			log.Errorln(fmt.Sprintf("[Task:%s] Alert send failed due to panic: %v", taskName, alertRecovered))
+		}
+	}()
+
+	if err := alert.SendAlert(msg); err != nil {
+		log.Errorln(fmt.Sprintf("[Task:%s] Alert send failed: %v", taskName, err))
 	}
 }
