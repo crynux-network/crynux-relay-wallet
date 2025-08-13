@@ -31,11 +31,7 @@ In the current design, user funds remain safe under that assumption; at worst, a
 
 - A minimum withdrawal amount is enforced.
 - The Relay may deduct a fee to cover blockchain gas costs.
-
-## Replay protection and ordering
-
-- Each withdrawal carries a timestamp, a strictly increasing sequence number, and a nonce.
-- The Relay Wallet tracks a cursor, detects gaps, rejects out-of-order input, and requires idempotency keys.
+- The tokens will be transferred to the [beneficial address](./docs/beneficial-address.md) if set.
 
 ## Risk controls
 
