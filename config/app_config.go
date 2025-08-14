@@ -36,4 +36,18 @@ type AppConfig struct {
 			PrivateKeyFile string `mapstructure:"private_key_file"`
 		} `mapstructure:"account"`
 	} `mapstructure:"blockchain"`
+
+	Relay struct {
+		Api struct {
+			Host string `mapstructure:"host"`
+			Key  string `mapstructure:"key"`
+		} `mapstructure:"api"`
+	} `mapstructure:"relay"`
+
+	Tasks struct {
+		SyncTaskFeeLogs struct {
+			IntervalSeconds uint `mapstructure:"interval_seconds"`
+			BatchSize       uint `mapstructure:"batch_size"`
+		} `mapstructure:"sync_task_fee_logs"`
+	} `mapstructure:"tasks"`
 }

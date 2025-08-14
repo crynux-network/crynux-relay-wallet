@@ -1,0 +1,7 @@
+---
+globs: *.go
+alwaysApply: false
+---
+Because the Relay Wallet handles funds, the correctness of financial data must be strictly guaranteed under all circumstances.
+
+Processing of logs and withdrawals may be delayed, but any data that has been processed must remain correct and consistent. In particular, during unexpected exceptions and shutdown, ensure that in-flight operations do not stop at a point that leaves data in an inconsistent state.

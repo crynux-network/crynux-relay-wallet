@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+Before making any changes, consult `/README.md` and `/docs/architecture.md` for a high-level project overview. All modifications must be consistent with the existing architecture and design.

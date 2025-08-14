@@ -1,0 +1,5 @@
+---
+globs: *.go
+alwaysApply: false
+---
+All function errors must be propagated up the call stack until handled. Any unhandled error reaching the `main` function must be logged and trigger an alert to operators.
