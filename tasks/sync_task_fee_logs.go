@@ -27,12 +27,7 @@ func StartSyncTaskFeeLogs(ctx context.Context) error {
 			log.Infoln("Sync task fee logs task is stopping")
 			return nil
 		case <-ticker.C:
-			err := func () error {
-				ctx1, cancel := context.WithTimeout(ctx, interval)
-				defer cancel()
-				return syncTaskFeeLogs(ctx1)
-			}()
-			if err != nil {
+			if err := syncTaskFeeLogs(ctx); err != nil {
 				log.Errorf("Failed to sync task fee logs: %v", err)
 				return err
 			}
@@ -57,21 +52,23 @@ func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) 
 	}
 
 	return merged, nil
-}  
+}
 
 func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFeeLog) error {
 	merged, err := mergeTaskFeeLogs(logs)
 	if err != nil {
 		return err
 	}
-	
+
 	var addresses []string
 	for address := range merged {
 		addresses = append(addresses, address)
 	}
 
-	
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	dbCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	return db.WithContext(dbCtx).Transaction(func(tx *gorm.DB) error {
 		var accounts []*models.RelayAccount
 		if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
 			return err
@@ -96,7 +93,7 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 				newAccounts = append(newAccounts, &models.RelayAccount{Address: address, Balance: models.BigInt{Int: *amount}})
 			}
 		}
-		
+
 		if err := tx.CreateInBatches(newAccounts, 100).Error; err != nil {
 			return err
 		}
@@ -117,28 +114,33 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 func syncTaskFeeLogs(ctx context.Context) error {
 	db := config.GetDB()
 
-	var system models.System
-	err := db.First(&system).Error
+	var checkpoint models.TaskFeeCheckpoint
+	err := db.First(&checkpoint).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 
-	logs, err := relay_api.GetTaskFeeLogs(system.LatestTaskFeeLogID, int(config.GetConfig().Tasks.SyncTaskFeeLogs.BatchSize))
-	if err != nil {
-		return err
-	}
-
-	if len(logs) == 0 {
-		return nil
-	}
-
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := processTaskFeeLogs(ctx, tx, logs); err != nil {
+	for {
+		logs, err := relay_api.GetTaskFeeLogs(ctx, checkpoint.LatestTaskFeeLogID, int(config.GetConfig().Tasks.SyncTaskFeeLogs.BatchSize))
+		if err != nil {
 			return err
 		}
 
-		system.LatestTaskFeeLogID = logs[len(logs)-1].ID
-		system.LatestTaskFeeLogTimestamp = logs[len(logs)-1].CreatedAt
-		return tx.Save(&system).Error
-	})
+		if len(logs) == 0 {
+			break
+		}
+		
+		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := processTaskFeeLogs(ctx, tx, logs); err != nil {
+				return err
+			}
+
+			checkpoint.LatestTaskFeeLogID = logs[len(logs)-1].ID
+			checkpoint.LatestTaskFeeLogTimestamp = logs[len(logs)-1].CreatedAt
+			return tx.Save(&checkpoint).Error
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

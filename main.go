@@ -69,6 +69,7 @@ func main() {
 
 	runTask("Heartbeat", tasks.StartHeartbeat)
 	runTask("SyncTaskFeeLogs", tasks.StartSyncTaskFeeLogs)
+	runTask("SyncWithdrawalRequests", tasks.StartSyncWithdrawalRequests)
 	runTask("ProcessWithdrawalRequests", tasks.StartProcessWithdrawalRequests)
 
 	<-ctx.Done()

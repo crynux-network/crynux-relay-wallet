@@ -3,6 +3,7 @@ package relay_api
 import (
 	"bytes"
 	"crynux_relay_wallet/config"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,7 +39,7 @@ type GetWithdrawalRequestsOutput struct {
 	Data []WithdrawalRequest `json:"data"`
 }
 
-func GetWithdrawalRequests(pivotWithdrawalRequestID uint, limit int) ([]WithdrawalRequest, error) {
+func GetWithdrawalRequests(ctx context.Context, pivotWithdrawalRequestID uint, limit int) ([]WithdrawalRequest, error) {
 	conf := config.GetConfig()
 
 	req, err := http.NewRequest("GET", conf.Relay.Api.Host+"/v1/withdraw/list", nil)
@@ -51,7 +52,7 @@ func GetWithdrawalRequests(pivotWithdrawalRequestID uint, limit int) ([]Withdraw
 		Limit:   limit,
 	}
 
-	timestamp, signature, err := SignData(input, conf.Blockchain.Account.PrivateKey)
+	timestamp, signature, err := SignData(input, conf.Relay.Api.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +64,7 @@ func GetWithdrawalRequests(pivotWithdrawalRequestID uint, limit int) ([]Withdraw
 	q.Add("signature", signature)
 	req.URL.RawQuery = q.Encode()
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +74,10 @@ func GetWithdrawalRequests(pivotWithdrawalRequestID uint, limit int) ([]Withdraw
 			log.Errorln(err)
 		}
 	}(resp.Body)
+
+	if err := processRelayResponse(resp); err != nil {
+		return nil, err
+	}
 
 	var output GetWithdrawalRequestsOutput
 
@@ -93,7 +98,7 @@ type FulfillWithdrawalRequestInputWithSignature struct {
 	Signature string `form:"signature" json:"signature" description:"Signature" validate:"required"`
 }
 
-func FulfillWithdrawalRequest(withdrawalRequestID uint) error {
+func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) error {
 	conf := config.GetConfig()
 
 	
@@ -101,7 +106,7 @@ func FulfillWithdrawalRequest(withdrawalRequestID uint) error {
 		ID: withdrawalRequestID,
 	}
 
-	timestamp, signature, err := SignData(input, conf.Blockchain.Account.PrivateKey)
+	timestamp, signature, err := SignData(input, conf.Relay.Api.PrivateKey)
 	if err != nil {
 		return err
 	}
@@ -124,7 +129,7 @@ func FulfillWithdrawalRequest(withdrawalRequestID uint) error {
 
 	req.Header.Add("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return err
 	}
@@ -135,8 +140,8 @@ func FulfillWithdrawalRequest(withdrawalRequestID uint) error {
 		}
 	}(resp.Body)
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to fulfill withdrawal request: %s", resp.Status)
+	if err := processRelayResponse(resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -152,7 +157,7 @@ type RejectWithdrawalRequestInputWithSignature struct {
 	Signature string `form:"signature" json:"signature" description:"Signature" validate:"required"`
 }
 
-func RejectWithdrawalRequest(withdrawalRequestID uint) error {
+func RejectWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) error {
 	conf := config.GetConfig()
 
 	
@@ -160,7 +165,7 @@ func RejectWithdrawalRequest(withdrawalRequestID uint) error {
 		ID: withdrawalRequestID,
 	}
 
-	timestamp, signature, err := SignData(input, conf.Blockchain.Account.PrivateKey)
+	timestamp, signature, err := SignData(input, conf.Relay.Api.PrivateKey)
 	if err != nil {
 		return err
 	}
@@ -183,7 +188,7 @@ func RejectWithdrawalRequest(withdrawalRequestID uint) error {
 
 	req.Header.Add("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return err
 	}
@@ -194,8 +199,8 @@ func RejectWithdrawalRequest(withdrawalRequestID uint) error {
 		}
 	}(resp.Body)
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to reject withdrawal request: %s", resp.Status)
+	if err := processRelayResponse(resp); err != nil {
+		return err
 	}
 
 	return nil

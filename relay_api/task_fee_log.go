@@ -2,6 +2,7 @@ package relay_api
 
 import (
 	"crynux_relay_wallet/config"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ type GetTaskFeeLogsOutput struct {
 	Data []TaskFeeLog `json:"data"`
 }
 
-func GetTaskFeeLogs(pivotTaskFeeLogID uint, limit int) ([]TaskFeeLog, error) {
+func GetTaskFeeLogs(ctx context.Context, pivotTaskFeeLogID uint, limit int) ([]TaskFeeLog, error) {
 
 	conf := config.GetConfig()
 
@@ -40,7 +41,7 @@ func GetTaskFeeLogs(pivotTaskFeeLogID uint, limit int) ([]TaskFeeLog, error) {
 		Limit:   limit,
 	}
 
-	timestamp, signature, err := SignData(input, conf.Blockchain.Account.PrivateKey)
+	timestamp, signature, err := SignData(input, conf.Relay.Api.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -52,8 +53,7 @@ func GetTaskFeeLogs(pivotTaskFeeLogID uint, limit int) ([]TaskFeeLog, error) {
 	q.Add("signature", signature)
 	req.URL.RawQuery = q.Encode()
 
-
-	resp, err := client.Do(req)
+	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +63,10 @@ func GetTaskFeeLogs(pivotTaskFeeLogID uint, limit int) ([]TaskFeeLog, error) {
 			log.Errorln(err)
 		}
 	}(resp.Body)
+
+	if err := processRelayResponse(resp); err != nil {
+		return nil, err
+	}
 
 	var output GetTaskFeeLogsOutput
 
