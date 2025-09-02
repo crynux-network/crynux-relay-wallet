@@ -4,7 +4,6 @@ import (
 	"context"
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/models"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -243,26 +242,7 @@ func (tc *TransactionConfirmer) handleFailedTransaction(ctx context.Context, cli
 			return err
 		}
 		if transaction.RetryCount < transaction.MaxRetries {
-			appConfig := config.GetConfig()
-			blockchain, ok := appConfig.Blockchains[transaction.Network]
-			if !ok {
-				return fmt.Errorf("network %s not found", transaction.Network)
-			}
-			nextTransaction := &models.BlockchainTransaction{
-				Network: transaction.Network,
-				Type: transaction.Type,
-				Status: models.TransactionStatusPending,
-				FromAddress: transaction.FromAddress,
-				ToAddress: transaction.ToAddress,
-				Value: transaction.Value,
-				Data: transaction.Data,
-				RetryCount: transaction.RetryCount + 1,
-				MaxRetries: transaction.MaxRetries,
-				NextRetryAt: sql.NullTime{Time: time.Now().Add(time.Duration(blockchain.RetryInterval) * time.Second)},
-				LastRetryAt: transaction.SentAt,
-				WithdrawID: transaction.WithdrawID,
-			}
-			if err := nextTransaction.Save(ctx, tx); err != nil {
+			if err := transaction.CreateRetryTransaction(ctx, tx); err != nil {
 				return err
 			}
 		}
@@ -281,26 +261,7 @@ func (tc *TransactionConfirmer) handleTimedOutTransaction(ctx context.Context, t
 			return err
 		}
 		if transaction.RetryCount < transaction.MaxRetries {
-			appConfig := config.GetConfig()
-			blockchain, ok := appConfig.Blockchains[transaction.Network]
-			if !ok {
-				return fmt.Errorf("network %s not found", transaction.Network)
-			}
-			nextTransaction := &models.BlockchainTransaction{
-				Network: transaction.Network,
-				Type: transaction.Type,
-				Status: models.TransactionStatusPending,
-				FromAddress: transaction.FromAddress,
-				ToAddress: transaction.ToAddress,
-				Value: transaction.Value,
-				Data: transaction.Data,
-				RetryCount: transaction.RetryCount + 1,
-				MaxRetries: transaction.MaxRetries,
-				NextRetryAt: sql.NullTime{Time: time.Now().Add(time.Duration(blockchain.RetryInterval) * time.Second)},
-				LastRetryAt: transaction.SentAt,
-				WithdrawID: transaction.WithdrawID,
-			}
-			if err := nextTransaction.Save(ctx, tx); err != nil {
+			if err := transaction.CreateRetryTransaction(ctx, tx); err != nil {
 				return err
 			}
 		}

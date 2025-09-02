@@ -2,7 +2,9 @@ package models
 
 import (
 	"context"
+	"crynux_relay_wallet/config"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -35,12 +37,11 @@ type BlockchainTransaction struct {
 	StatusMessage     sql.NullString    `json:"status_message" gorm:"null"`
 	RetryCount        uint8             `json:"retry_count" gorm:"not null;default:0"`
 	MaxRetries        uint8             `json:"max_retries" gorm:"not null;default:0"`
-	LastRetryAt       sql.NullTime      `json:"last_retry_at" gorm:"null"`
+	RetryTransactionID sql.NullInt64     `json:"retry_transaction_id" gorm:"null;index"`
 	NextRetryAt       sql.NullTime      `json:"next_retry_at" gorm:"null"`
 	SentAt            sql.NullTime      `json:"sent_at" gorm:"null"`
 	ConfirmedAt       sql.NullTime      `json:"confirmed_at" gorm:"null"`
 	FailedAt          sql.NullTime      `json:"failed_at" gorm:"null"`
-	WithdrawID        sql.NullInt64     `json:"withdraw_id" gorm:"null;index"`
 }
 
 // TableName returns the table name for BlockchainTransaction
@@ -158,4 +159,43 @@ func (tx *BlockchainTransaction) MarkFailed(ctx context.Context, db *gorm.DB, bl
 	}
 
 	return tx.Update(ctx, db, updates)
+}
+
+func (tx *BlockchainTransaction) CreateRetryTransaction(ctx context.Context, db *gorm.DB) error {
+	appConfig := config.GetConfig()
+	blockchain, ok := appConfig.Blockchains[tx.Network]
+	if !ok {
+		return fmt.Errorf("network %s not found", tx.Network)
+	}
+	var retryTransactionID sql.NullInt64
+	if tx.RetryTransactionID.Valid {
+		retryTransactionID = tx.RetryTransactionID
+	} else {
+		retryTransactionID = sql.NullInt64{Int64: int64(tx.ID), Valid: true}
+	}
+	nextTransaction := &BlockchainTransaction{
+		Network: tx.Network,
+		Type: tx.Type,
+		Status: TransactionStatusPending,
+		FromAddress: tx.FromAddress,
+		ToAddress: tx.ToAddress,
+		Value: tx.Value,
+		Data: tx.Data,
+		RetryCount: tx.RetryCount + 1,
+		MaxRetries: tx.MaxRetries,
+		NextRetryAt: sql.NullTime{Time: time.Now().Add(time.Duration(blockchain.RetryInterval) * time.Second)},
+		RetryTransactionID: retryTransactionID,
+	}
+	if err := nextTransaction.Save(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func GetRetryTransactionsByID(ctx context.Context, db *gorm.DB, id uint) ([]BlockchainTransaction, error) {
+	var transactions []BlockchainTransaction
+	if err := db.WithContext(ctx).Model(&BlockchainTransaction{}).Where("retry_transaction_id = ?", id).Order("id").Find(&transactions).Error; err != nil {
+		return nil, err
+	}
+	return transactions, nil
 }

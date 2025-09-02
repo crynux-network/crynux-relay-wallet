@@ -106,22 +106,34 @@ func getUnfinishedWithdrawalRecords(ctx context.Context, db *gorm.DB, startID ui
 
 func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) (err error) {
 	for record.Status == models.WithdrawStatusPending {
-		blockchainTransaction, err := record.GetLatestBlockchainTransaction(ctx, db)
-		if err != nil {
-			return err
-		}
 
-		if blockchainTransaction == nil {
+		var blockchainTransaction *models.BlockchainTransaction
+		if !record.BlockchainTransactionID.Valid {
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
 				blockchainTransaction, err = blockchain.QueueSendETH(ctx, tx, common.HexToAddress(record.BenefitAddress), big.NewInt(0).Set(&record.Amount.Int), record.Network)
 				if err != nil {
 					return err
 				}
-				blockchainTransaction.WithdrawID = sql.NullInt64{Int64: int64(record.ID), Valid: true}
-				return blockchainTransaction.Save(ctx, tx)
+				
+				record.BlockchainTransactionID = sql.NullInt64{Int64: int64(blockchainTransaction.ID), Valid: true}
+				return tx.Save(record).Error
 			})
 			if err != nil {
 				return err
+			}
+		} else {
+			blockchainTransaction, err = models.GetTransactionByID(ctx, db, uint(record.BlockchainTransactionID.Int64))
+			if err != nil {
+				return err
+			}
+			if blockchainTransaction.Status == models.TransactionStatusFailed {
+				retryTransactions, err := models.GetRetryTransactionsByID(ctx, db, uint(record.BlockchainTransactionID.Int64))
+				if err != nil {
+					return err
+				}
+				if len(retryTransactions) > 0 {
+					blockchainTransaction = &retryTransactions[len(retryTransactions)-1]
+				}
 			}
 		}
 
