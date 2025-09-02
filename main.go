@@ -98,7 +98,7 @@ func safeSendAlert(taskName, msg string) {
 		}
 	}()
 
-	if err := alert.SendAlert(msg); err != nil {
+	if err := alert.SendAlert(taskName, msg); err != nil {
 		log.Errorln(fmt.Sprintf("[Task:%s] Alert send failed: %v", taskName, err))
 	}
 }

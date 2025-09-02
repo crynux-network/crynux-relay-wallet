@@ -27,6 +27,8 @@ type AppConfig struct {
 		MaxFileSize int    `mapstructure:"max_file_size"`
 		MaxDays     int    `mapstructure:"max_days"`
 		MaxFileNum  int    `mapstructure:"max_file_num"`
+		HeartbeatLogFile string `mapstructure:"heartbeat_log_file"`
+		AlertLogFile     string `mapstructure:"alert_log_file"`
 	} `mapstructure:"log"`
 
 	Blockchains map[string]struct {
@@ -58,8 +60,11 @@ type AppConfig struct {
 
 	Tasks struct {
 		SyncTaskFeeLogs struct {
-			IntervalSeconds uint `mapstructure:"interval_seconds"`
-			BatchSize       uint `mapstructure:"batch_size"`
+			IntervalSeconds            uint   `mapstructure:"interval_seconds"`
+			BatchSize                  uint   `mapstructure:"batch_size"`
+			MaxTaskFeeAmount           uint64 `mapstructure:"max_task_fee_amount"`
+			MaxAddressLogsCountInBatch uint   `mapstructure:"max_address_logs_count_in_batch"`
+			MaxNewAddressCountInBatch  uint   `mapstructure:"max_new_address_count_in_batch"`
 		} `mapstructure:"sync_task_fee_logs"`
 		SyncWithdrawalRequests struct {
 			IntervalSeconds uint `mapstructure:"interval_seconds"`

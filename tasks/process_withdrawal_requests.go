@@ -8,7 +8,6 @@ import (
 	"crynux_relay_wallet/relay_api"
 	"database/sql"
 	"errors"
-	"fmt"
 	"math/big"
 	"time"
 
@@ -18,8 +17,16 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+var ErrWithdrawalRequestStatusInvalid = errors.New("invalid withdrawal request status")
+var ErrWithdrawalRequestAmountInvalid = errors.New("invalid withdrawal request amount")
+var ErrWithdrawalRequestAddressNotExists = errors.New("withdrawal request address not exists")
+var ErrWithdrawalRequestAmountTooLarge = errors.New("withdrawal request amount is too large")
+var ErrWithdrawalRequestBalanceNotEnough = errors.New("withdrawal request balance not enough")
+var ErrWithdrawalRequestBeneficialAddressInvalid = errors.New("withdrawal request beneficial address is invalid")
+
 func StartSyncWithdrawalRequests(ctx context.Context) error {
-	interval := time.Duration(config.GetConfig().Tasks.ProcessWithdrawalRequests.IntervalSeconds) * time.Second
+	intervalSeconds := config.GetConfig().Tasks.SyncWithdrawalRequests.IntervalSeconds
+	interval := time.Duration(intervalSeconds) * time.Second
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -30,7 +37,7 @@ func StartSyncWithdrawalRequests(ctx context.Context) error {
 			log.Infoln("Sync withdrawal requests task is stopping")
 			return nil
 		case <-ticker.C:
-			if err := syncWithdrawalRequests(ctx); err != nil {
+			if err := syncWithdrawalRequests(ctx, intervalSeconds); err != nil {
 				log.Errorf("Failed to sync withdrawal requests: %v", err)
 				return err
 			}
@@ -42,7 +49,78 @@ func StartProcessWithdrawalRequests(ctx context.Context) error {
 	return processWithdrawalRecords(ctx)
 }
 
-func syncWithdrawalRequests(ctx context.Context) error {
+func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_api.WithdrawalRequest) error {
+	amountMap := make(map[string]*big.Int)
+	networkAmountMap := make(map[string]*big.Int)
+	for _, request := range requests {
+		if request.Status != relay_api.WithdrawStatusPending {
+			return ErrWithdrawalRequestStatusInvalid
+		}
+		amount, ok := big.NewInt(0).SetString(request.Amount, 10)
+		if !ok {
+			return ErrWithdrawalRequestAmountInvalid
+		}
+		if _, ok := amountMap[request.Address]; ok {
+			amountMap[request.Address].Add(amountMap[request.Address], amount)
+		} else {
+			amountMap[request.Address] = big.NewInt(0).Set(amount)
+		}
+		if _, ok := networkAmountMap[request.Network]; ok {
+			networkAmountMap[request.Network].Add(networkAmountMap[request.Network], amount)
+		} else {
+			networkAmountMap[request.Network] = big.NewInt(0).Set(amount)
+		}
+	}
+
+	for network, amount := range networkAmountMap {
+		bc, err := blockchain.GetBlockchainClient(network)
+		if err != nil {
+			return err
+		}
+		balance, err := bc.BalanceAt(ctx, common.HexToAddress(bc.Address))
+		if err != nil {
+			return err
+		}
+		if balance.Cmp(amount) < 0 {
+			return ErrWithdrawalRequestBalanceNotEnough
+		}
+	}
+
+	addresses := make([]string, 0, len(amountMap))
+	for address := range amountMap {
+		addresses = append(addresses, address)
+	}
+
+	var accounts []*models.RelayAccount
+	if err := db.Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
+		return err
+	}
+
+	if len(accounts) != len(addresses) {
+		return ErrWithdrawalRequestAddressNotExists
+	}
+
+	for _, account := range accounts {
+		amount := amountMap[account.Address]
+		if amount.Cmp(&account.Balance.Int) > 0 {
+			return ErrWithdrawalRequestAmountTooLarge
+		}
+	}
+
+	for _, request := range requests {
+		beneficialAddress, err := blockchain.GetBenefitAddress(ctx, common.HexToAddress(request.Address), request.Network)
+		if err != nil {
+			return err
+		}
+		if beneficialAddress.Hex() != request.BenefitAddress {
+			return ErrWithdrawalRequestBeneficialAddressInvalid
+		}
+	}
+
+	return nil
+}
+
+func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 	db := config.GetDB()
 
 	var checkpoint models.WithdrawalRequestCheckpoint
@@ -58,16 +136,23 @@ func syncWithdrawalRequests(ctx context.Context) error {
 		}
 
 		if len(requests) == 0 {
-			break
-		}
-		var records []*models.WithdrawRecord
-		for _, request := range requests {
-			if request.Status != relay_api.WithdrawStatusPending {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(intervalSeconds) * time.Second):
 				continue
 			}
+		}
+
+		if err := checkWithdrawalRequests(ctx, db, requests); err != nil {
+			return err
+		}
+
+		var records []*models.WithdrawRecord
+		for _, request := range requests {
 			amount, ok := big.NewInt(0).SetString(request.Amount, 10)
 			if !ok {
-				return fmt.Errorf("invalid amount: %s", request.Amount)
+				return ErrWithdrawalRequestAmountInvalid
 			}
 			records = append(records, &models.WithdrawRecord{
 				RemoteID:       request.ID,
@@ -92,7 +177,6 @@ func syncWithdrawalRequests(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
 }
 
 func getUnfinishedWithdrawalRecords(ctx context.Context, db *gorm.DB, startID uint, limit int) ([]*models.WithdrawRecord, error) {
@@ -114,7 +198,7 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 				if err != nil {
 					return err
 				}
-				
+
 				record.BlockchainTransactionID = sql.NullInt64{Int64: int64(blockchainTransaction.ID), Valid: true}
 				return tx.Save(record).Error
 			})
@@ -222,7 +306,7 @@ func processWithdrawalRecords(ctx context.Context) error {
 								log.Errorf("ProcessWithdrawalRecords: update timeout withdrawal record %d status error %v", record.ID, err)
 								time.Sleep(5 * time.Second)
 								continue
-							}					
+							}
 						case err := <-c:
 							if err != nil {
 								log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)

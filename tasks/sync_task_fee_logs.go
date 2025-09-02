@@ -5,6 +5,7 @@ import (
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/models"
 	"crynux_relay_wallet/relay_api"
+	"crynux_relay_wallet/utils"
 	"errors"
 	"fmt"
 	"math/big"
@@ -14,9 +15,15 @@ import (
 	"gorm.io/gorm"
 )
 
+var ErrTaskFeeAmountTooLarge = errors.New("task fee amount is greater than max task fee amount threshold")
+var ErrTaskFeeAmountInvalid = errors.New("cannot parse amount from task fee log")
+var ErrTaskFeeAddressCountTooLarge = errors.New("task fee logs count of a single address is greater than max address count threshold")
+var ErrTaskFeeNewAddressCountTooLarge = errors.New("task fee logs count of new addresses is greater than max new address count threshold")
+
 func StartSyncTaskFeeLogs(ctx context.Context) error {
 
-	interval := time.Duration(config.GetConfig().Tasks.SyncTaskFeeLogs.IntervalSeconds) * time.Second
+	intervalSeconds := config.GetConfig().Tasks.SyncTaskFeeLogs.IntervalSeconds
+	interval := time.Duration(intervalSeconds) * time.Second
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -27,7 +34,7 @@ func StartSyncTaskFeeLogs(ctx context.Context) error {
 			log.Infoln("Sync task fee logs task is stopping")
 			return nil
 		case <-ticker.C:
-			if err := syncTaskFeeLogs(ctx); err != nil {
+			if err := syncTaskFeeLogs(ctx, intervalSeconds); err != nil {
 				log.Errorf("Failed to sync task fee logs: %v", err)
 				return err
 			}
@@ -41,7 +48,7 @@ func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) 
 	for _, log := range logs {
 		amount, success := new(big.Int).SetString(log.TaskFee, 10)
 		if !success {
-			return nil, errors.New("cannot parse amount from task fee log")
+			return nil, ErrTaskFeeAmountInvalid
 		}
 
 		if _, ok := merged[log.Address]; !ok {
@@ -52,6 +59,60 @@ func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) 
 	}
 
 	return merged, nil
+}
+
+func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFeeLog) error {
+	appConfig := config.GetConfig()
+	maxTaskFeeAmount := utils.EtherToWei(big.NewInt(int64(appConfig.Tasks.SyncTaskFeeLogs.MaxTaskFeeAmount)))
+
+	addressLogCount := make(map[string]int)
+	for _, log := range logs {
+		amount, success := new(big.Int).SetString(log.TaskFee, 10)
+		if !success {
+			return ErrTaskFeeAmountInvalid
+		}
+		if amount.Cmp(maxTaskFeeAmount) > 0 {
+			return ErrTaskFeeAmountTooLarge
+		}
+		addressLogCount[log.Address]++
+	}
+
+	var maxCount int
+	for _, count := range addressLogCount {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+	if uint(maxCount) > appConfig.Tasks.SyncTaskFeeLogs.MaxAddressLogsCountInBatch {
+		return ErrTaskFeeAddressCountTooLarge
+	}
+
+	addresses := make([]string, 0, len(addressLogCount))
+	for address := range addressLogCount {
+		addresses = append(addresses, address)
+	}
+
+	var accounts []*models.RelayAccount
+	if err := db.Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
+		return err
+	}
+
+	existedAddresses := make(map[string]bool)
+	for _, account := range accounts {
+		existedAddresses[account.Address] = true
+	}
+
+	var newAddressCount int
+	for address := range addressLogCount {
+		if _, ok := existedAddresses[address]; !ok {
+			newAddressCount++
+		}
+	}
+	if uint(newAddressCount) > appConfig.Tasks.SyncTaskFeeLogs.MaxNewAddressCountInBatch {
+		return ErrTaskFeeNewAddressCountTooLarge
+	}
+
+	return nil
 }
 
 func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFeeLog) error {
@@ -111,7 +172,7 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 	})
 }
 
-func syncTaskFeeLogs(ctx context.Context) error {
+func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 	db := config.GetDB()
 
 	var checkpoint models.TaskFeeCheckpoint
@@ -120,16 +181,26 @@ func syncTaskFeeLogs(ctx context.Context) error {
 		return err
 	}
 
+	batchSize := int(config.GetConfig().Tasks.SyncTaskFeeLogs.BatchSize)
 	for {
-		logs, err := relay_api.GetTaskFeeLogs(ctx, checkpoint.LatestTaskFeeLogID, int(config.GetConfig().Tasks.SyncTaskFeeLogs.BatchSize))
+		logs, err := relay_api.GetTaskFeeLogs(ctx, checkpoint.LatestTaskFeeLogID, batchSize)
 		if err != nil {
 			return err
 		}
 
-		if len(logs) == 0 {
-			break
+		if len(logs) < batchSize {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(intervalSeconds) * time.Second):
+				continue
+			}
 		}
-		
+
+		if err := checkTaskFeeLogs(ctx, db, logs); err != nil {
+			return err
+		}
+
 		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := processTaskFeeLogs(ctx, tx, logs); err != nil {
 				return err
@@ -142,5 +213,4 @@ func syncTaskFeeLogs(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
 }
