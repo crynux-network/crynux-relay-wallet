@@ -21,6 +21,7 @@ var ErrWithdrawalRequestStatusInvalid = errors.New("invalid withdrawal request s
 var ErrWithdrawalRequestAmountInvalid = errors.New("invalid withdrawal request amount")
 var ErrWithdrawalRequestAddressNotExists = errors.New("withdrawal request address not exists")
 var ErrWithdrawalRequestAmountTooLarge = errors.New("withdrawal request amount is too large")
+var ErrWithdrawalRequestTaskFeeNotEnough = errors.New("withdrawal request task fee not enough")
 var ErrWithdrawalRequestBalanceNotEnough = errors.New("withdrawal request balance not enough")
 var ErrWithdrawalRequestBeneficialAddressInvalid = errors.New("withdrawal request beneficial address is invalid")
 
@@ -235,7 +236,26 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 		}
 
 		if blockchainTransaction.Status == models.TransactionStatusConfirmed {
-			err = record.UpdateStatus(ctx, db, models.WithdrawStatusSuccess)
+			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
+				var account models.RelayAccount
+				err = tx.Model(&models.RelayAccount{}).Where("address = ?", record.Address).First(&account).Error
+				if err != nil {
+					return err
+				}
+				if account.Balance.Cmp(&record.Amount.Int) < 0 {
+					return ErrWithdrawalRequestTaskFeeNotEnough
+				}
+				account.Balance.Sub(&account.Balance.Int, &record.Amount.Int)
+				err = tx.Save(&account).Error
+				if err != nil {
+					return err
+				}
+				err = record.UpdateStatus(ctx, tx, models.WithdrawStatusSuccess)
+				if err != nil {
+					return err
+				}
+				return nil
+			})
 			if err != nil {
 				return err
 			}

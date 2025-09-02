@@ -93,7 +93,7 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 	}
 
 	var accounts []*models.RelayAccount
-	if err := db.Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
+	if err := db.WithContext(ctx).Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
 		return err
 	}
 
@@ -135,9 +135,11 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 			return err
 		}
 
-		existedAddresses := make(map[string]bool)
-		for _, account := range accounts {
-			existedAddresses[account.Address] = true
+		existedAddresses := make([]string, len(accounts))
+		existedAddressMap := make(map[string]bool)
+		for i, account := range accounts {
+			existedAddresses[i] = account.Address
+			existedAddressMap[account.Address] = true
 		}
 
 		for _, account := range accounts {
@@ -150,22 +152,26 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 
 		var newAccounts []*models.RelayAccount
 		for address, amount := range merged {
-			if _, ok := existedAddresses[address]; !ok {
+			if _, ok := existedAddressMap[address]; !ok {
 				newAccounts = append(newAccounts, &models.RelayAccount{Address: address, Balance: models.BigInt{Int: *amount}})
 			}
 		}
 
-		if err := tx.CreateInBatches(newAccounts, 100).Error; err != nil {
-			return err
+		if len(newAccounts) > 0 {
+			if err := tx.CreateInBatches(newAccounts, 100).Error; err != nil {
+				return err
+			}
 		}
 
-		var cases string
-		for _, account := range accounts {
-			cases += fmt.Sprintf(" WHEN address = '%s' THEN '%s'", account.Address, account.Balance.String())
-		}
-		if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", existedAddresses).
-			Update("balance", gorm.Expr("CASE"+cases+" END")).Error; err != nil {
-			return err
+		if len(accounts) > 0 {
+			var cases string
+			for _, account := range accounts {
+				cases += fmt.Sprintf(" WHEN address = '%s' THEN '%s'", account.Address, account.Balance.String())
+			}
+			if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", existedAddressMap).
+				Update("balance", gorm.Expr("CASE"+cases+" END")).Error; err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -188,7 +194,7 @@ func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 			return err
 		}
 
-		if len(logs) < batchSize {
+		if len(logs) == 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

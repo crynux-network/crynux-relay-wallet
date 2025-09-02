@@ -9,7 +9,7 @@ func M20250811(db *gorm.DB) *gormigrate.Gormigrate {
 
 	type RelayAccounts struct {
 		gorm.Model
-		Address string `json:"address" gorm:"uniqueIndex"`
+		Address string `json:"address" gorm:"uniqueIndex;type:string;size:191;"`
 		Balance string `json:"balance" gorm:"type:string;size:255"`
 	}
 

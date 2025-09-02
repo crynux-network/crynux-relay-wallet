@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crynux_relay_wallet/alert"
+	"crynux_relay_wallet/blockchain"
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/migrate"
 	"crynux_relay_wallet/tasks"
@@ -40,9 +41,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	
 	log.Infoln("Starting database migration...")
 	startDBMigration()
 	log.Infoln("DB migrations are done!")
+	
+	log.Infoln("Initializing blockchain...")
+	if err := blockchain.Init(context.Background()); err != nil {
+		log.Fatalln(err)
+	}
+	log.Infoln("Start blockchain transaction manager...")
+	tm := blockchain.NewTransactionManager(config.GetDB())
+	tm.Start(context.Background())
 
 	log.Infoln("Starting tasks...")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
