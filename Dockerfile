@@ -19,6 +19,5 @@ ENV TZ=Asia/Tokyo
 WORKDIR /app
 
 COPY --from=builder /crynux_relay_wallet/crynux_relay_wallet .
-COPY static ./static
 
 CMD ["/app/crynux_relay_wallet"]
