@@ -1,4 +1,4 @@
-FROM golang:alpine3.18 AS builder
+FROM golang:1.23-alpine3.20 AS builder
 RUN apk add --no-cache --update gcc g++
 
 WORKDIR /crynux_relay_wallet
@@ -11,7 +11,7 @@ COPY . .
 
 RUN CGO_ENABLED=1 go build
 
-FROM alpine:3.18
+FROM alpine:3.20
 
 RUN apk add --no-cache tzdata
 ENV TZ=Asia/Tokyo
