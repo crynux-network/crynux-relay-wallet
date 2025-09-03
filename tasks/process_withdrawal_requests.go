@@ -125,16 +125,31 @@ func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 	db := config.GetDB()
 
 	var checkpoint models.WithdrawalRequestCheckpoint
-	err := db.First(&checkpoint).Error
+	err := db.WithContext(ctx).First(&checkpoint).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 
 	for {
+		var taskFeeCheckpoint models.TaskFeeCheckpoint
+		err = db.WithContext(ctx).First(&taskFeeCheckpoint).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
 		requests, err := relay_api.GetWithdrawalRequests(ctx, checkpoint.LatestWithdrawalRequestID, int(config.GetConfig().Tasks.SyncWithdrawalRequests.BatchSize))
 		if err != nil {
 			return err
 		}
+
+		end := 0
+		for i, request := range requests {
+			end = i + 1
+			if request.CreatedAt >= taskFeeCheckpoint.LatestTaskFeeLogTimestamp {
+				break
+			}
+		}
+		requests = requests[:end]
 
 		if len(requests) == 0 {
 			select {

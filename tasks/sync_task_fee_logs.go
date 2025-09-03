@@ -182,7 +182,7 @@ func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 	db := config.GetDB()
 
 	var checkpoint models.TaskFeeCheckpoint
-	err := db.First(&checkpoint).Error
+	err := db.WithContext(ctx).First(&checkpoint).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
