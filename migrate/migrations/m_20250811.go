@@ -1,8 +1,6 @@
 package migrations
 
 import (
-	"crynux_relay_wallet/models"
-
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
 )
@@ -11,9 +9,8 @@ func M20250811(db *gorm.DB) *gormigrate.Gormigrate {
 
 	type RelayAccounts struct {
 		gorm.Model
-		Address string        `json:"address" gorm:"uniqueIndex"`
-		Balance models.BigInt `json:"balance" gorm:"type:string;size:255"`
-		BeneficialAddress string `json:"beneficial_address" gorm:"size:255"`
+		Address string `json:"address" gorm:"uniqueIndex;type:string;size:191;"`
+		Balance string `json:"balance" gorm:"type:string;size:255"`
 	}
 
 	return gormigrate.New(db, gormigrate.DefaultOptions, []*gormigrate.Migration{
