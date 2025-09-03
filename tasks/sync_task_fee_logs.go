@@ -168,7 +168,7 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 			for _, account := range accounts {
 				cases += fmt.Sprintf(" WHEN address = '%s' THEN '%s'", account.Address, account.Balance.String())
 			}
-			if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", existedAddressMap).
+			if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", existedAddresses).
 				Update("balance", gorm.Expr("CASE"+cases+" END")).Error; err != nil {
 				return err
 			}
