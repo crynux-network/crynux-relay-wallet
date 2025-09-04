@@ -15,10 +15,27 @@ import (
 	"gorm.io/gorm"
 )
 
-var ErrTaskFeeAmountTooLarge = errors.New("task fee amount is greater than max task fee amount threshold")
-var ErrTaskFeeAmountInvalid = errors.New("cannot parse amount from task fee log")
-var ErrTaskFeeAddressCountTooLarge = errors.New("task fee logs count of a single address is greater than max address count threshold")
-var ErrTaskFeeNewAddressCountTooLarge = errors.New("task fee logs count of new addresses is greater than max new address count threshold")
+type TaskFeeError struct {
+	Message string
+}
+
+func (e *TaskFeeError) Error() string {
+	return e.Message
+}
+
+func NewTaskFeeError(message string) *TaskFeeError {
+	return &TaskFeeError{Message: message}
+}
+
+func IsTaskFeeError(err error) bool {
+	var taskFeeError *TaskFeeError
+	return errors.As(err, &taskFeeError)
+}
+
+var ErrTaskFeeAmountTooLarge = NewTaskFeeError("task fee amount is greater than max task fee amount threshold")
+var ErrTaskFeeAmountInvalid = NewTaskFeeError("cannot parse amount from task fee log")
+var ErrTaskFeeAddressCountTooLarge = NewTaskFeeError("task fee logs count of a single address is greater than max address count threshold")
+var ErrTaskFeeNewAddressCountTooLarge = NewTaskFeeError("task fee logs count of new addresses is greater than max new address count threshold")
 
 func StartSyncTaskFeeLogs(ctx context.Context) error {
 
@@ -36,7 +53,9 @@ func StartSyncTaskFeeLogs(ctx context.Context) error {
 		case <-ticker.C:
 			if err := syncTaskFeeLogs(ctx, intervalSeconds); err != nil {
 				log.Errorf("Failed to sync task fee logs: %v", err)
-				return err
+				if IsTaskFeeError(err) {
+					return err
+				}
 			}
 		}
 	}
