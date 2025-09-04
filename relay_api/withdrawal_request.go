@@ -28,6 +28,7 @@ type WithdrawalRequest struct {
 	Amount         string         `json:"amount"`
 	Network        string         `json:"network"`
 	Status         WithdrawStatus `json:"status"`
+	TaskFeeEventID uint           `json:"task_fee_event_id"`
 }
 
 type GetWithdrawalRequestsInput struct {
