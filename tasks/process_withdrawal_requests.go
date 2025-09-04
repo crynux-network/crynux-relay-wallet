@@ -147,11 +147,15 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 	}
 
 	for _, request := range requests {
-		beneficialAddress, err := blockchain.GetBenefitAddress(ctx, common.HexToAddress(request.Address), request.Network)
+		ba, err := blockchain.GetBenefitAddress(ctx, common.HexToAddress(request.Address), request.Network)
 		if err != nil {
 			return err
 		}
-		if beneficialAddress.Hex() != request.BenefitAddress {
+		var beneficialAddress string
+		if ba.Hex() != "0x0000000000000000000000000000000000000000" {
+			beneficialAddress = ba.Hex()
+		}
+		if beneficialAddress != request.BenefitAddress {
 			return ErrWithdrawalRequestBeneficialAddressInvalid
 		}
 	}
@@ -248,7 +252,13 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 
 		if !record.BlockchainTransactionID.Valid {
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
-				blockchainTransaction, err = blockchain.QueueSendETH(ctx, tx, common.HexToAddress(record.BenefitAddress), big.NewInt(0).Set(&record.Amount.Int), record.Network)
+				var toAddress common.Address
+				if record.BenefitAddress != "" {
+					toAddress = common.HexToAddress(record.BenefitAddress)
+				} else {
+					toAddress = common.HexToAddress(record.Address)
+				}
+				blockchainTransaction, err = blockchain.QueueSendETH(ctx, tx, toAddress, big.NewInt(0).Set(&record.Amount.Int), record.Network)
 				if err != nil {
 					return err
 				}
