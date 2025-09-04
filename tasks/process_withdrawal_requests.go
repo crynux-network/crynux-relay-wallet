@@ -243,9 +243,9 @@ func getUnfinishedWithdrawalRecords(ctx context.Context, db *gorm.DB, startID ui
 }
 
 func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) (err error) {
+	var blockchainTransaction *models.BlockchainTransaction
 	for record.Status == models.WithdrawStatusPending {
 
-		var blockchainTransaction *models.BlockchainTransaction
 		if !record.BlockchainTransactionID.Valid {
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
 				blockchainTransaction, err = blockchain.QueueSendETH(ctx, tx, common.HexToAddress(record.BenefitAddress), big.NewInt(0).Set(&record.Amount.Int), record.Network)
@@ -321,7 +321,7 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 	}
 
 	if record.Status == models.WithdrawStatusSuccess {
-		err = relay_api.FulfillWithdrawalRequest(ctx, record.RemoteID)
+		err = relay_api.FulfillWithdrawalRequest(ctx, record.RemoteID, blockchainTransaction.TxHash.String)
 		if err != nil {
 			return err
 		}
