@@ -17,13 +17,30 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var ErrWithdrawalRequestStatusInvalid = errors.New("invalid withdrawal request status")
-var ErrWithdrawalRequestAmountInvalid = errors.New("invalid withdrawal request amount")
-var ErrWithdrawalRequestAddressNotExists = errors.New("withdrawal request address not exists")
-var ErrWithdrawalRequestAmountTooLarge = errors.New("withdrawal request amount is too large")
-var ErrWithdrawalRequestTaskFeeNotEnough = errors.New("withdrawal request task fee not enough")
-var ErrWithdrawalRequestBalanceNotEnough = errors.New("withdrawal request balance not enough")
-var ErrWithdrawalRequestBeneficialAddressInvalid = errors.New("withdrawal request beneficial address is invalid")
+type WithdrawalRequestError struct {
+	Message string
+}
+
+func (e *WithdrawalRequestError) Error() string {
+	return e.Message
+}
+
+func NewWithdrawalRequestError(message string) *WithdrawalRequestError {
+	return &WithdrawalRequestError{Message: message}
+}
+
+func IsWithdrawalRequestError(err error) bool {
+	var withdrawalRequestError *WithdrawalRequestError
+	return errors.As(err, &withdrawalRequestError)
+}
+
+var ErrWithdrawalRequestStatusInvalid = NewWithdrawalRequestError("invalid withdrawal request status")
+var ErrWithdrawalRequestAmountInvalid = NewWithdrawalRequestError("invalid withdrawal request amount")
+var ErrWithdrawalRequestAddressNotExists = NewWithdrawalRequestError("withdrawal request address not exists")
+var ErrWithdrawalRequestAmountTooLarge = NewWithdrawalRequestError("withdrawal request amount is too large")
+var ErrWithdrawalRequestTaskFeeNotEnough = NewWithdrawalRequestError("withdrawal request task fee not enough")
+var ErrWithdrawalRequestBalanceNotEnough = NewWithdrawalRequestError("withdrawal request balance not enough")
+var ErrWithdrawalRequestBeneficialAddressInvalid = NewWithdrawalRequestError("withdrawal request beneficial address is invalid")
 
 func StartSyncWithdrawalRequests(ctx context.Context) error {
 	intervalSeconds := config.GetConfig().Tasks.SyncWithdrawalRequests.IntervalSeconds
@@ -40,14 +57,35 @@ func StartSyncWithdrawalRequests(ctx context.Context) error {
 		case <-ticker.C:
 			if err := syncWithdrawalRequests(ctx, intervalSeconds); err != nil {
 				log.Errorf("Failed to sync withdrawal requests: %v", err)
-				return err
+				if IsWithdrawalRequestError(err) {
+					return err
+				}
 			}
 		}
 	}
 }
 
 func StartProcessWithdrawalRequests(ctx context.Context) error {
-	return processWithdrawalRecords(ctx)
+	intervalSeconds := config.GetConfig().Tasks.ProcessWithdrawalRequests.IntervalSeconds
+	interval := time.Duration(intervalSeconds) * time.Second
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Infoln("Process withdrawal requests task is stopping")
+			return nil
+		case <-ticker.C:
+			if err := processWithdrawalRecords(ctx); err != nil {
+				log.Errorf("Failed to process withdrawal requests: %v", err)
+				if IsWithdrawalRequestError(err) {
+					return err
+				}
+			}
+		}
+	}
 }
 
 func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_api.WithdrawalRequest) error {
@@ -302,60 +340,82 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 }
 
 func processWithdrawalRecords(ctx context.Context) error {
-	appConfig := config.GetConfig()
-	db := config.GetDB()
-
-	var startID uint
-	limit := appConfig.Tasks.ProcessWithdrawalRequests.BatchSize
-
-	for {
-		records, err := getUnfinishedWithdrawalRecords(ctx, db, startID, int(limit))
-		if err != nil {
-			return err
-		}
-
-		if len(records) > 0 {
-			startID = records[len(records)-1].ID
-			for _, record := range records {
-				go func(ctx context.Context, record *models.WithdrawRecord) {
-					deadline := record.CreatedAt.Add(time.Duration(config.GetConfig().Tasks.ProcessWithdrawalRequests.Timeout) * time.Second)
-					ctx, cancel := context.WithDeadline(ctx, deadline)
-					defer cancel()
-
-					for {
-						log.Infof("ProcessWithdrawalRecords: process withdrawal record %d", record.ID)
-						c := make(chan error)
-						go func() {
-							c <- processWithdrawalRecord(ctx, db, record)
-						}()
-
-						select {
-						case <-ctx.Done():
-							log.Infof("ProcessWithdrawalRecords: process withdrawal record %d timeout", record.ID)
-							if err = relay_api.RejectWithdrawalRequest(ctx, record.RemoteID); err != nil {
-								log.Errorf("ProcessWithdrawalRecords: reject timeout withdrawal record %d error %v", record.ID, err)
-								time.Sleep(5 * time.Second)
-								continue
-							}
-							if err := record.UpdateStatus(ctx, db, models.WithdrawStatusFinished); err != nil {
-								log.Errorf("ProcessWithdrawalRecords: update timeout withdrawal record %d status error %v", record.ID, err)
-								time.Sleep(5 * time.Second)
-								continue
-							}
-						case err := <-c:
-							if err != nil {
-								log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)
-								time.Sleep(5 * time.Second)
-							} else {
-								log.Infof("ProcessWithdrawalRecords: process withdrawal record %d successfully", record.ID)
-								return
+	innerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error)
+	
+	go func(ctx context.Context, errCh chan<- error) {
+		appConfig := config.GetConfig()
+		db := config.GetDB()
+	
+		var startID uint
+		limit := appConfig.Tasks.ProcessWithdrawalRequests.BatchSize
+	
+		for {
+			records, err := getUnfinishedWithdrawalRecords(ctx, db, startID, int(limit))
+			if err != nil {
+				errCh <- err
+				return
+			}
+	
+			if len(records) > 0 {
+				startID = records[len(records)-1].ID
+				for _, record := range records {
+					go func(ctx context.Context, record *models.WithdrawRecord) {
+						deadline := record.CreatedAt.Add(time.Duration(config.GetConfig().Tasks.ProcessWithdrawalRequests.Timeout) * time.Second)
+						ctx, cancel := context.WithDeadline(ctx, deadline)
+						defer cancel()
+	
+						for {
+							log.Infof("ProcessWithdrawalRecords: process withdrawal record %d", record.ID)
+							c := make(chan error)
+							go func() {
+								c <- processWithdrawalRecord(ctx, db, record)
+							}()
+	
+							select {
+							case <-ctx.Done():
+								err = ctx.Err()
+								if err == context.DeadlineExceeded {
+									log.Infof("ProcessWithdrawalRecords: process withdrawal record %d timeout", record.ID)
+									if err := relay_api.RejectWithdrawalRequest(ctx, record.RemoteID); err != nil {
+										log.Errorf("ProcessWithdrawalRecords: reject timeout withdrawal record %d error %v", record.ID, err)
+										time.Sleep(5 * time.Second)
+										continue
+									}
+									if err := record.UpdateStatus(ctx, db, models.WithdrawStatusFinished); err != nil {
+										log.Errorf("ProcessWithdrawalRecords: update timeout withdrawal record %d status error %v", record.ID, err)
+										time.Sleep(5 * time.Second)
+										continue
+									}
+								} else {
+									return
+								}
+							case err := <-c:
+								if err != nil {
+									log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)
+									if IsWithdrawalRequestError(err) {
+										errCh <- err
+										return
+									}
+									time.Sleep(5 * time.Second)
+								} else {
+									log.Infof("ProcessWithdrawalRecords: process withdrawal record %d successfully", record.ID)
+									return
+								}
 							}
 						}
-					}
-				}(ctx, record)
+					}(ctx, record)
+				}
 			}
+			time.Sleep(time.Duration(appConfig.Tasks.ProcessWithdrawalRequests.IntervalSeconds) * time.Second)
 		}
-		time.Sleep(time.Duration(appConfig.Tasks.ProcessWithdrawalRequests.IntervalSeconds) * time.Second)
-	}
+	}(innerCtx, errCh)
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
 }
