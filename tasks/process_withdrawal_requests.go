@@ -144,7 +144,7 @@ func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 
 		end := 0
 		for _, request := range requests {
-			if request.CreatedAt >= taskFeeCheckpoint.LatestTaskFeeLogTimestamp {
+			if request.TaskFeeEventID > taskFeeCheckpoint.LatestTaskFeeLogID {
 				break
 			}
 			end++
