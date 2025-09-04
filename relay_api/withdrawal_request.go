@@ -91,6 +91,7 @@ func GetWithdrawalRequests(ctx context.Context, pivotWithdrawalRequestID uint, l
 
 type FulfillWithdrawalRequestInput struct {
 	ID uint `json:"id"`
+	TxHash string `json:"tx_hash" description:"Transaction hash"`
 }
 
 type FulfillWithdrawalRequestInputWithSignature struct {
@@ -99,12 +100,13 @@ type FulfillWithdrawalRequestInputWithSignature struct {
 	Signature string `form:"signature" json:"signature" description:"Signature" validate:"required"`
 }
 
-func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) error {
+func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint, txHash string) error {
 	conf := config.GetConfig()
 
 	
 	input := FulfillWithdrawalRequestInput{
 		ID: withdrawalRequestID,
+		TxHash: txHash,
 	}
 
 	timestamp, signature, err := SignData(input, conf.Relay.Api.PrivateKey)
