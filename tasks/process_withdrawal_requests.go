@@ -36,11 +36,13 @@ func IsWithdrawalRequestError(err error) bool {
 
 var ErrWithdrawalRequestStatusInvalid = NewWithdrawalRequestError("invalid withdrawal request status")
 var ErrWithdrawalRequestAmountInvalid = NewWithdrawalRequestError("invalid withdrawal request amount")
+var ErrWithdrawalRequestWithdrawalFeeInvalid = NewWithdrawalRequestError("invalid withdrawal request withdrawalFee")
 var ErrWithdrawalRequestAddressNotExists = NewWithdrawalRequestError("withdrawal request address not exists")
 var ErrWithdrawalRequestAmountTooLarge = NewWithdrawalRequestError("withdrawal request amount is too large")
 var ErrWithdrawalRequestTaskFeeNotEnough = NewWithdrawalRequestError("withdrawal request task fee not enough")
 var ErrWithdrawalRequestBalanceNotEnough = NewWithdrawalRequestError("withdrawal request balance not enough")
 var ErrWithdrawalRequestBeneficialAddressInvalid = NewWithdrawalRequestError("withdrawal request beneficial address is invalid")
+var ErrWithdrawalRequestWithdrawalFeeAddressInvalid = NewWithdrawalRequestError("withdrawal request withdrawal fee address is invalid")
 
 func StartSyncWithdrawalRequests(ctx context.Context) error {
 	intervalSeconds := config.GetConfig().Tasks.SyncWithdrawalRequests.IntervalSeconds
@@ -99,15 +101,20 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 		if !ok {
 			return ErrWithdrawalRequestAmountInvalid
 		}
+		withdrawalFee, ok := big.NewInt(0).SetString(request.WithdrawalFee, 10)
+		if !ok {
+			return ErrWithdrawalRequestWithdrawalFeeInvalid
+		}
+		totalAmount := big.NewInt(0).Add(amount, withdrawalFee)
 		if _, ok := amountMap[request.Address]; ok {
-			amountMap[request.Address].Add(amountMap[request.Address], amount)
+			amountMap[request.Address].Add(amountMap[request.Address], totalAmount)
 		} else {
-			amountMap[request.Address] = big.NewInt(0).Set(amount)
+			amountMap[request.Address] = big.NewInt(0).Set(totalAmount)
 		}
 		if _, ok := networkAmountMap[request.Network]; ok {
-			networkAmountMap[request.Network].Add(networkAmountMap[request.Network], amount)
+			networkAmountMap[request.Network].Add(networkAmountMap[request.Network], totalAmount)
 		} else {
-			networkAmountMap[request.Network] = big.NewInt(0).Set(amount)
+			networkAmountMap[request.Network] = big.NewInt(0).Set(totalAmount)
 		}
 	}
 
@@ -247,10 +254,19 @@ func getUnfinishedWithdrawalRecords(ctx context.Context, db *gorm.DB, startID ui
 }
 
 func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) (err error) {
+	appConfig := config.GetConfig()
 	var blockchainTransaction *models.BlockchainTransaction
 	for record.Status == models.WithdrawStatusPending {
 
 		if !record.BlockchainTransactionID.Valid {
+			withdrawalFeeAddress, err := blockchain.GetWithdrawalFeeAddress(ctx, record.Network)
+			if err != nil {
+				return err
+			}
+			
+			if withdrawalFeeAddress.Hex() != appConfig.Tasks.ProcessWithdrawalRequests.WithdrawalFeeAddress {
+				return ErrWithdrawalRequestWithdrawalFeeAddressInvalid
+			}
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
 				var toAddress common.Address
 				if record.BenefitAddress != "" {
@@ -258,7 +274,7 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 				} else {
 					toAddress = common.HexToAddress(record.Address)
 				}
-				blockchainTransaction, err = blockchain.QueueSendETH(ctx, tx, toAddress, big.NewInt(0).Set(&record.Amount.Int), record.Network)
+				blockchainTransaction, err = blockchain.QueueWithdraw(ctx, tx, toAddress, big.NewInt(0).Set(&record.Amount.Int), big.NewInt(0).Set(&record.WithdrawalFee.Int), record.Network)
 				if err != nil {
 					return err
 				}
@@ -305,10 +321,11 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 				if err != nil {
 					return err
 				}
-				if account.Balance.Cmp(&record.Amount.Int) < 0 {
+				totalAmount := big.NewInt(0).Add(&record.Amount.Int, &record.WithdrawalFee.Int)
+				if account.Balance.Cmp(totalAmount) < 0 {
 					return ErrWithdrawalRequestTaskFeeNotEnough
 				}
-				account.Balance.Sub(&account.Balance.Int, &record.Amount.Int)
+				account.Balance.Sub(&account.Balance.Int, totalAmount)
 				err = tx.Save(&account).Error
 				if err != nil {
 					return err

@@ -17,6 +17,7 @@ type WithdrawRecord struct {
 	Network                 string         `json:"network" gorm:"not null;index"`
 	Status                  WithdrawStatus `json:"status" gorm:"not null;default:0;index"`
 	BlockchainTransactionID sql.NullInt64  `json:"blockchain_transaction_id" gorm:"index"`
+	WithdrawalFee           BigInt         `json:"withdrawal_fee" gorm:"not null"`
 }
 
 type WithdrawStatus int8

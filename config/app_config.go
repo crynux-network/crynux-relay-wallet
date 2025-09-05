@@ -22,11 +22,11 @@ type AppConfig struct {
 	} `mapstructure:"db"`
 
 	Log struct {
-		Level       string `mapstructure:"level"`
-		Output      string `mapstructure:"output"`
-		MaxFileSize int    `mapstructure:"max_file_size"`
-		MaxDays     int    `mapstructure:"max_days"`
-		MaxFileNum  int    `mapstructure:"max_file_num"`
+		Level            string `mapstructure:"level"`
+		Output           string `mapstructure:"output"`
+		MaxFileSize      int    `mapstructure:"max_file_size"`
+		MaxDays          int    `mapstructure:"max_days"`
+		MaxFileNum       int    `mapstructure:"max_file_num"`
 		HeartbeatLogFile string `mapstructure:"heartbeat_log_file"`
 		AlertLogFile     string `mapstructure:"alert_log_file"`
 	} `mapstructure:"log"`
@@ -44,6 +44,7 @@ type AppConfig struct {
 		} `mapstructure:"account"`
 		Contracts struct {
 			BenefitAddress string `mapstructure:"benefit_address"`
+			Withdraw       string `mapstructure:"withdraw"`
 		} `mapstructure:"contracts"`
 		MaxRetries      uint8  `mapstructure:"max_retries"`
 		RetryInterval   uint64 `mapstructure:"retry_interval"`
@@ -71,9 +72,10 @@ type AppConfig struct {
 			BatchSize       uint `mapstructure:"batch_size"`
 		} `mapstructure:"sync_withdrawal_requests"`
 		ProcessWithdrawalRequests struct {
-			IntervalSeconds uint   `mapstructure:"interval_seconds"`
-			BatchSize       uint   `mapstructure:"batch_size"`
-			Timeout         uint64 `mapstructure:"timeout"`
+			IntervalSeconds      uint   `mapstructure:"interval_seconds"`
+			BatchSize            uint   `mapstructure:"batch_size"`
+			Timeout              uint64 `mapstructure:"timeout"`
+			WithdrawalFeeAddress string `mapstructure:"withdrawal_fee_address"`
 		} `mapstructure:"process_withdrawal_requests"`
 	} `mapstructure:"tasks"`
 }
