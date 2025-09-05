@@ -284,6 +284,7 @@ func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *b
 		FromAddress: blockchain.Account.Address,
 		ToAddress:   to.Hex(),
 		Value:       amount.String(),
+		MaxRetries:  blockchain.MaxRetries,
 	}
 
 	if err := transaction.Save(ctx, db); err != nil {
