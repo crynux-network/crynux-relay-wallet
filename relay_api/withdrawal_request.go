@@ -2,8 +2,8 @@ package relay_api
 
 import (
 	"bytes"
-	"context"
 	"crynux_relay_wallet/config"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,7 +29,6 @@ type WithdrawalRequest struct {
 	Network        string         `json:"network"`
 	Status         WithdrawStatus `json:"status"`
 	TaskFeeEventID uint           `json:"task_fee_event_id"`
-	WithdrawalFee  string         `json:"withdrawal_fee"`
 }
 
 type GetWithdrawalRequestsInput struct {
@@ -91,7 +90,7 @@ func GetWithdrawalRequests(ctx context.Context, pivotWithdrawalRequestID uint, l
 }
 
 type FulfillWithdrawalRequestInput struct {
-	ID     uint   `json:"id"`
+	ID uint `json:"id"`
 	TxHash string `json:"tx_hash" description:"Transaction hash"`
 }
 
@@ -104,8 +103,9 @@ type FulfillWithdrawalRequestInputWithSignature struct {
 func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint, txHash string) error {
 	conf := config.GetConfig()
 
+	
 	input := FulfillWithdrawalRequestInput{
-		ID:     withdrawalRequestID,
+		ID: withdrawalRequestID,
 		TxHash: txHash,
 	}
 
@@ -116,8 +116,8 @@ func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint, txH
 
 	inputWithSignature := FulfillWithdrawalRequestInputWithSignature{
 		FulfillWithdrawalRequestInput: input,
-		Timestamp:                     timestamp,
-		Signature:                     signature,
+		Timestamp: timestamp,
+		Signature: signature,
 	}
 
 	body, err := json.Marshal(inputWithSignature)
@@ -163,6 +163,7 @@ type RejectWithdrawalRequestInputWithSignature struct {
 func RejectWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) error {
 	conf := config.GetConfig()
 
+	
 	input := RejectWithdrawalRequestInput{
 		ID: withdrawalRequestID,
 	}
@@ -174,8 +175,8 @@ func RejectWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) erro
 
 	inputWithSignature := RejectWithdrawalRequestInputWithSignature{
 		RejectWithdrawalRequestInput: input,
-		Timestamp:                    timestamp,
-		Signature:                    signature,
+		Timestamp: timestamp,
+		Signature: signature,
 	}
 
 	body, err := json.Marshal(inputWithSignature)

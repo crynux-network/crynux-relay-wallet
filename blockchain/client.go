@@ -30,7 +30,6 @@ type BlockchainClient struct {
 	Network                        string
 	RpcClient                      *ethclient.Client
 	BenefitAddressContractInstance *bindings.BenefitAddress
-	WithdrawContractInstance       *bindings.Withdraw
 	ChainID                        *big.Int
 	GasPrice                       *big.Int
 	GasLimit                       uint64
@@ -71,11 +70,6 @@ func initBlockchainClient(ctx context.Context, network string) error {
 		return err
 	}
 
-	withdrawInstance, err := bindings.NewWithdraw(common.HexToAddress(blockchain.Contracts.Withdraw), client)
-	if err != nil {
-		return err
-	}
-
 	gasPrice, err := initSuggestGasPrice(ctx, client, blockchain.GasPrice)
 	if err != nil {
 		return err
@@ -97,7 +91,6 @@ func initBlockchainClient(ctx context.Context, network string) error {
 		Network:                        network,
 		RpcClient:                      client,
 		BenefitAddressContractInstance: benefitAddressInstance,
-		WithdrawContractInstance:       withdrawInstance,
 		ChainID:                        chainID,
 		GasPrice:                       gasPrice,
 		GasLimit:                       blockchain.GasLimit,
@@ -291,7 +284,6 @@ func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *b
 		FromAddress: blockchain.Account.Address,
 		ToAddress:   to.Hex(),
 		Value:       amount.String(),
-		MaxRetries:  blockchain.MaxRetries,
 	}
 
 	if err := transaction.Save(ctx, db); err != nil {
