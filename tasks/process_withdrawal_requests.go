@@ -6,6 +6,7 @@ import (
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/models"
 	"crynux_relay_wallet/relay_api"
+	"crynux_relay_wallet/utils"
 	"database/sql"
 	"errors"
 	"math/big"
@@ -41,6 +42,7 @@ var ErrWithdrawalRequestAmountTooLarge = NewWithdrawalRequestError("withdrawal r
 var ErrWithdrawalRequestTaskFeeNotEnough = NewWithdrawalRequestError("withdrawal request task fee not enough")
 var ErrWithdrawalRequestBalanceNotEnough = NewWithdrawalRequestError("withdrawal request balance not enough")
 var ErrWithdrawalRequestBeneficialAddressInvalid = NewWithdrawalRequestError("withdrawal request beneficial address is invalid")
+var ErrWithdrawalRequestAmountTooSmall = NewWithdrawalRequestError("withdrawal request amount is too small")
 
 func StartSyncWithdrawalRequests(ctx context.Context) error {
 	intervalSeconds := config.GetConfig().Tasks.SyncWithdrawalRequests.IntervalSeconds
@@ -89,6 +91,18 @@ func StartProcessWithdrawalRequests(ctx context.Context) error {
 }
 
 func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_api.WithdrawalRequest) error {
+	appConfig := config.GetConfig()
+	minWithdrawalAmount := utils.EtherToWei(big.NewInt(0).SetUint64(appConfig.Tasks.SyncWithdrawalRequests.MinWithdrawalAmount))
+	for _, request := range requests {
+		amount, ok := big.NewInt(0).SetString(request.Amount, 10)
+		if !ok {
+			return ErrWithdrawalRequestAmountInvalid
+		}
+		if amount.Cmp(minWithdrawalAmount) < 0 {
+			return ErrWithdrawalRequestAmountTooSmall
+		}
+	}
+
 	amountMap := make(map[string]*big.Int)
 	networkAmountMap := make(map[string]*big.Int)
 	for _, request := range requests {

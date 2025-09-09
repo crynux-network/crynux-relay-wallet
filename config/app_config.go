@@ -69,6 +69,7 @@ type AppConfig struct {
 		SyncWithdrawalRequests struct {
 			IntervalSeconds uint `mapstructure:"interval_seconds"`
 			BatchSize       uint `mapstructure:"batch_size"`
+			MinWithdrawalAmount uint64 `mapstructure:"min_withdrawal_amount"`
 		} `mapstructure:"sync_withdrawal_requests"`
 		ProcessWithdrawalRequests struct {
 			IntervalSeconds uint   `mapstructure:"interval_seconds"`
