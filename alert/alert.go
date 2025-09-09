@@ -26,9 +26,9 @@ func SendAlert(taskName, alertMessage string) error {
 
 func SendHeartbeat() error {
 	appConfig := config.GetConfig()
-	alertLogFile := appConfig.Log.AlertLogFile
+	logFile := appConfig.Log.HeartbeatLogFile
 
-	f, err := os.OpenFile(alertLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
