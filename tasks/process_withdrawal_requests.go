@@ -165,11 +165,7 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 		if err != nil {
 			return err
 		}
-		var beneficialAddress string
-		if ba.Hex() != "0x0000000000000000000000000000000000000000" {
-			beneficialAddress = ba.Hex()
-		}
-		if beneficialAddress != request.BenefitAddress {
+		if ba.Hex() != request.BenefitAddress {
 			return ErrWithdrawalRequestBeneficialAddressInvalid
 		}
 	}
