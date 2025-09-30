@@ -38,6 +38,7 @@ type BlockchainClient struct {
 	Nonce                          *uint64
 	NonceMu                        sync.Mutex
 	Limiter                        *rate.Limiter
+	SentTransactionCountLimit      uint64
 }
 
 var blockchainClients = make(map[string]*BlockchainClient)
@@ -99,6 +100,7 @@ func initBlockchainClient(ctx context.Context, network string) error {
 		Nonce:                          &nonce,
 		NonceMu:                        sync.Mutex{},
 		Limiter:                        limiter,
+		SentTransactionCountLimit:      blockchain.SentTransactionCountLimit,
 	}
 	return nil
 }
@@ -248,7 +250,7 @@ func (client *BlockchainClient) SendETH(ctx context.Context, to common.Address, 
 		return nil, err
 	}
 
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(client.ChainID), privateKey)
+	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(client.ChainID), privateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -302,13 +304,8 @@ func (client *BlockchainClient) GetErrorMessageFromReceipt(ctx context.Context, 
 		return "", err
 	}
 
-	from, err := types.Sender(types.NewEIP155Signer(client.ChainID), tx)
-	if err != nil {
-		return "", err
-	}
-
 	msg := ethereum.CallMsg{
-		From:     from,
+		From:     common.HexToAddress(client.Address),
 		To:       tx.To(),
 		Gas:      tx.Gas(),
 		GasPrice: tx.GasPrice(),

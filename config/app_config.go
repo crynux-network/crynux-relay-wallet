@@ -22,11 +22,11 @@ type AppConfig struct {
 	} `mapstructure:"db"`
 
 	Log struct {
-		Level       string `mapstructure:"level"`
-		Output      string `mapstructure:"output"`
-		MaxFileSize int    `mapstructure:"max_file_size"`
-		MaxDays     int    `mapstructure:"max_days"`
-		MaxFileNum  int    `mapstructure:"max_file_num"`
+		Level            string `mapstructure:"level"`
+		Output           string `mapstructure:"output"`
+		MaxFileSize      int    `mapstructure:"max_file_size"`
+		MaxDays          int    `mapstructure:"max_days"`
+		MaxFileNum       int    `mapstructure:"max_file_num"`
 		HeartbeatLogFile string `mapstructure:"heartbeat_log_file"`
 		AlertLogFile     string `mapstructure:"alert_log_file"`
 	} `mapstructure:"log"`
@@ -45,9 +45,10 @@ type AppConfig struct {
 		Contracts struct {
 			BenefitAddress string `mapstructure:"benefit_address"`
 		} `mapstructure:"contracts"`
-		MaxRetries      uint8  `mapstructure:"max_retries"`
-		RetryInterval   uint64 `mapstructure:"retry_interval"`
-		ReceiptWaitTime uint64 `mapstructure:"receipt_wait_time"`
+		MaxRetries                uint8  `mapstructure:"max_retries"`
+		RetryInterval             uint64 `mapstructure:"retry_interval"`
+		ReceiptWaitTime           uint64 `mapstructure:"receipt_wait_time"`
+		SentTransactionCountLimit uint64 `mapstructure:"sent_transaction_count_limit"`
 	} `mapstructure:"blockchains"`
 
 	Relay struct {
@@ -67,8 +68,8 @@ type AppConfig struct {
 			MaxNewAddressCountInBatch  uint   `mapstructure:"max_new_address_count_in_batch"`
 		} `mapstructure:"sync_task_fee_logs"`
 		SyncWithdrawalRequests struct {
-			IntervalSeconds uint `mapstructure:"interval_seconds"`
-			BatchSize       uint `mapstructure:"batch_size"`
+			IntervalSeconds     uint   `mapstructure:"interval_seconds"`
+			BatchSize           uint   `mapstructure:"batch_size"`
 			MinWithdrawalAmount uint64 `mapstructure:"min_withdrawal_amount"`
 		} `mapstructure:"sync_withdrawal_requests"`
 		ProcessWithdrawalRequests struct {
