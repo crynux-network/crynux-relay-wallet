@@ -233,7 +233,7 @@ func (tc *TransactionConfirmer) handleFailedTransaction(ctx context.Context, cli
 	// Get error message from receipt
 	errorMsg, err := client.GetErrorMessageFromReceipt(ctx, receipt)
 	if err != nil {
-		errorMsg = "Transaction failed with status 0"
+		errorMsg = fmt.Sprintf("Transaction failed with status 0: %v", err)
 	}
 
 	// Update transaction with receipt information

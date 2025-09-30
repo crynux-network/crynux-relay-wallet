@@ -5,6 +5,7 @@ import (
 	"crynux_relay_wallet/config"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -23,25 +24,26 @@ const (
 // BlockchainTransaction represents a blockchain transaction that needs to be sent
 type BlockchainTransaction struct {
 	gorm.Model
-	Network           string            `json:"network" gorm:"index;not null"`
-	Type              string            `json:"type" gorm:"index;not null"`
-	Status            TransactionStatus `json:"status" gorm:"index;not null;default:0"`
-	FromAddress       string            `json:"from_address" gorm:"not null"`
-	ToAddress         string            `json:"to_address" gorm:"not null"`
-	Value             string            `json:"value" gorm:"not null;default:'0'"`
-	Data              sql.NullString    `json:"data" gorm:"null"`
-	TxHash            sql.NullString    `json:"tx_hash" gorm:"null;uniqueIndex"`
-	BlockNumber       sql.NullInt64     `json:"block_number" gorm:"null"`
-	GasUsed           sql.NullInt64     `json:"gas_used" gorm:"null"`
-	EffectiveGasPrice sql.NullString    `json:"effective_gas_price" gorm:"null"`
-	StatusMessage     sql.NullString    `json:"status_message" gorm:"null"`
-	RetryCount        uint8             `json:"retry_count" gorm:"not null;default:0"`
-	MaxRetries        uint8             `json:"max_retries" gorm:"not null;default:0"`
+	Network            string            `json:"network" gorm:"index;not null"`
+	Type               string            `json:"type" gorm:"index;not null"`
+	Status             TransactionStatus `json:"status" gorm:"index;not null;default:0"`
+	FromAddress        string            `json:"from_address" gorm:"not null"`
+	ToAddress          string            `json:"to_address" gorm:"not null"`
+	Value              string            `json:"value" gorm:"not null;default:'0'"`
+	Data               sql.NullString    `json:"data" gorm:"null"`
+	TxHash             sql.NullString    `json:"tx_hash" gorm:"null;uniqueIndex"`
+	BlockNumber        sql.NullInt64     `json:"block_number" gorm:"null"`
+	Nonce              sql.NullInt64     `json:"nonce" gorm:"null"`
+	GasUsed            sql.NullInt64     `json:"gas_used" gorm:"null"`
+	EffectiveGasPrice  sql.NullString    `json:"effective_gas_price" gorm:"null"`
+	StatusMessage      sql.NullString    `json:"status_message" gorm:"null"`
+	RetryCount         uint8             `json:"retry_count" gorm:"not null;default:0"`
+	MaxRetries         uint8             `json:"max_retries" gorm:"not null;default:0"`
 	RetryTransactionID sql.NullInt64     `json:"retry_transaction_id" gorm:"null;index"`
-	NextRetryAt       sql.NullTime      `json:"next_retry_at" gorm:"null"`
-	SentAt            sql.NullTime      `json:"sent_at" gorm:"null"`
-	ConfirmedAt       sql.NullTime      `json:"confirmed_at" gorm:"null"`
-	FailedAt          sql.NullTime      `json:"failed_at" gorm:"null"`
+	NextRetryAt        sql.NullTime      `json:"next_retry_at" gorm:"null"`
+	SentAt             sql.NullTime      `json:"sent_at" gorm:"null"`
+	ConfirmedAt        sql.NullTime      `json:"confirmed_at" gorm:"null"`
+	FailedAt           sql.NullTime      `json:"failed_at" gorm:"null"`
 }
 
 // TableName returns the table name for BlockchainTransaction
@@ -106,6 +108,16 @@ func GetSentTransactions(ctx context.Context, db *gorm.DB, offset, limit int) ([
 	return transactions, nil
 }
 
+func GetSentTransactionCountByNetwork(ctx context.Context, db *gorm.DB, network string) (int64, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var count int64
+	if err := db.WithContext(dbCtx).Model(&BlockchainTransaction{}).Where("network = ?", network).Where("status = ?", TransactionStatusSent).Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // GetTransactionByHash gets a transaction by its hash
 func GetTransactionByHash(ctx context.Context, db *gorm.DB, txHash string) (*BlockchainTransaction, error) {
 	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -126,10 +138,11 @@ func GetTransactionByID(ctx context.Context, db *gorm.DB, id uint) (*BlockchainT
 	return &transaction, nil
 }
 
-func (tx *BlockchainTransaction) MarkSent(ctx context.Context, db *gorm.DB, txHash string) error {
+func (tx *BlockchainTransaction) MarkSent(ctx context.Context, db *gorm.DB, txHash string, nonce int64) error {
 	updates := map[string]interface{}{
-		"status": TransactionStatusSent,
+		"status":  TransactionStatusSent,
 		"tx_hash": txHash,
+		"nonce":   nonce,
 		"sent_at": time.Now(),
 	}
 
@@ -138,10 +151,10 @@ func (tx *BlockchainTransaction) MarkSent(ctx context.Context, db *gorm.DB, txHa
 
 func (tx *BlockchainTransaction) MarkConfirmed(ctx context.Context, db *gorm.DB, blockNumber, gasUsed int64, effectiveGasPrice string) error {
 	updates := map[string]interface{}{
-		"status": TransactionStatusConfirmed,
-		"confirmed_at": time.Now(),
-		"block_number": blockNumber,
-		"gas_used": gasUsed,
+		"status":              TransactionStatusConfirmed,
+		"confirmed_at":        time.Now(),
+		"block_number":        blockNumber,
+		"gas_used":            gasUsed,
 		"effective_gas_price": effectiveGasPrice,
 	}
 
@@ -150,12 +163,16 @@ func (tx *BlockchainTransaction) MarkConfirmed(ctx context.Context, db *gorm.DB,
 
 func (tx *BlockchainTransaction) MarkFailed(ctx context.Context, db *gorm.DB, blockNumber, gasUsed int64, effectiveGasPrice string, errorMsg string) error {
 	updates := map[string]interface{}{
-		"status": TransactionStatusFailed,
-		"failed_at": time.Now(),
-		"block_number": blockNumber,
-		"gas_used": gasUsed,
+		"status":              TransactionStatusFailed,
+		"failed_at":           time.Now(),
+		"block_number":        blockNumber,
+		"gas_used":            gasUsed,
 		"effective_gas_price": effectiveGasPrice,
-		"error_message": errorMsg,
+		"status_message":      errorMsg,
+	}
+	// make tx_hash unique
+	if tx.TxHash.Valid {
+		updates["tx_hash"] = tx.TxHash.String + "_" + strconv.FormatInt(int64(tx.RetryCount), 10)
 	}
 
 	return tx.Update(ctx, db, updates)
@@ -174,16 +191,16 @@ func (tx *BlockchainTransaction) CreateRetryTransaction(ctx context.Context, db 
 		retryTransactionID = sql.NullInt64{Int64: int64(tx.ID), Valid: true}
 	}
 	nextTransaction := &BlockchainTransaction{
-		Network: tx.Network,
-		Type: tx.Type,
-		Status: TransactionStatusPending,
-		FromAddress: tx.FromAddress,
-		ToAddress: tx.ToAddress,
-		Value: tx.Value,
-		Data: tx.Data,
-		RetryCount: tx.RetryCount + 1,
-		MaxRetries: tx.MaxRetries,
-		NextRetryAt: sql.NullTime{Time: time.Now().Add(time.Duration(blockchain.RetryInterval) * time.Second)},
+		Network:            tx.Network,
+		Type:               tx.Type,
+		Status:             TransactionStatusPending,
+		FromAddress:        tx.FromAddress,
+		ToAddress:          tx.ToAddress,
+		Value:              tx.Value,
+		Data:               tx.Data,
+		RetryCount:         tx.RetryCount + 1,
+		MaxRetries:         tx.MaxRetries,
+		NextRetryAt:        sql.NullTime{Time: time.Now().Add(time.Duration(blockchain.RetryInterval) * time.Second)},
 		RetryTransactionID: retryTransactionID,
 	}
 	if err := nextTransaction.Save(ctx, db); err != nil {

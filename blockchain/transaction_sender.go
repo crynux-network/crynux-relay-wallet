@@ -157,42 +157,56 @@ func (ts *TransactionSender) sendTransaction(ctx context.Context, transaction *m
 		return nil
 	}
 
-
-	// Send transaction based on type
-	txHash, err := ts.sendRawTransaction(ctx, transaction)
+	sentTransactionCount, err := models.GetSentTransactionCountByNetwork(ctx, ts.db, transaction.Network)
 	if err != nil {
 		return err
 	}
-
-	// Update transaction status to sent
-	if err := transaction.MarkSent(ctx, ts.db, txHash); err != nil {
-		return err
-	}
-
-	log.Infof("Transaction %d sent successfully with hash: %s", transaction.ID, txHash)
-	return nil
-}
-
-// sendRawTransaction sends a raw transaction to the blockchain
-func (ts *TransactionSender) sendRawTransaction(ctx context.Context, transaction *models.BlockchainTransaction) (string, error) {
+	
 	client, err := GetBlockchainClient(transaction.Network)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	if transaction.FromAddress != client.Address {
-		return "", fmt.Errorf("from address is not the same as the client address")
-	}
-
-	auth, err := client.GetAuth(ctx)
-	if err != nil {
-		return "", err
+	if uint64(sentTransactionCount) >= client.SentTransactionCountLimit {
+		log.Infof("Sent transaction count limit reached for transaction: %d, network %s, skipping", transaction.ID, transaction.Network)
+		return nil
 	}
 
 	client.NonceMu.Lock()
 	defer client.NonceMu.Unlock()
 
 	nonce, err := client.GetNonce(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Send transaction based on type
+	txHash, err := ts.sendRawTransaction(ctx, client, transaction, nonce)
+	if err != nil {
+		log.Errorf("Failed to send raw transaction %d, nonce: %d, %v", transaction.ID, nonce, err)
+		err = client.processSendingTxError(err)
+		return err
+	}
+
+	// Update transaction status to sent
+	if err := transaction.MarkSent(ctx, ts.db, txHash, int64(nonce)); err != nil {
+		log.Errorf("Failed to mark transaction %d as sent, nonce: %d, %v", transaction.ID, nonce, err)
+		return err
+	}
+
+	client.IncrementNonce()
+
+	log.Infof("Transaction %d sent successfully with hash: %s, nonce: %d", transaction.ID, txHash, nonce)
+	return nil
+}
+
+// sendRawTransaction sends a raw transaction to the blockchain
+func (ts *TransactionSender) sendRawTransaction(ctx context.Context, client *BlockchainClient, transaction *models.BlockchainTransaction, nonce uint64) (string, error) {
+	if transaction.FromAddress != client.Address {
+		return "", fmt.Errorf("from address is not the same as the client address")
+	}
+
+	auth, err := client.GetAuth(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -236,8 +250,6 @@ func (ts *TransactionSender) sendRawTransaction(ctx context.Context, transaction
 		err = client.processSendingTxError(err)
 		return "", err
 	}
-
-	client.IncrementNonce()
 
 	return signedTx.Hash().Hex(), nil
 }
