@@ -11,11 +11,21 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type TaskFeeLogType int8
+
+const (
+	TaskFeeLogTypeTask TaskFeeLogType = iota
+	TaskFeeLogTypeDraw
+	TaskFeeLogTypeWithdrawalFee
+	TaskFeeLogTypeBought
+)
+
 type TaskFeeLog struct {
 	ID        uint   `json:"id"`
 	CreatedAt uint64 `json:"created_at"`
 	Address   string `json:"address"`
-	TaskFee   string `json:"task_fee"`
+	TaskFee   string         `json:"task_fee"`
+	Type      TaskFeeLogType `json:"type"`
 }
 
 type GetTaskFeeLogsInput struct {

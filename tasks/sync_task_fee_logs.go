@@ -90,7 +90,7 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 		if !success {
 			return ErrTaskFeeAmountInvalid
 		}
-		if amount.Cmp(maxTaskFeeAmount) > 0 {
+		if log.Type != relay_api.TaskFeeLogTypeBought && amount.Cmp(maxTaskFeeAmount) > 0 {
 			return ErrTaskFeeAmountTooLarge
 		}
 		addressLogCount[log.Address]++
