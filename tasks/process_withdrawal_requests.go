@@ -359,25 +359,41 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 	return nil
 }
 
+func rejectTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	log.Infof("ProcessWithdrawalRecords: process withdrawal record %d timeout", record.ID)
+	if err := relay_api.RejectWithdrawalRequest(ctx, record.RemoteID); err != nil {
+		log.Errorf("ProcessWithdrawalRecords: reject timeout withdrawal record %d error %v", record.ID, err)
+		return err
+	}
+	if err := record.UpdateStatus(ctx, db, models.WithdrawStatusFinished); err != nil {
+		log.Errorf("ProcessWithdrawalRecords: update timeout withdrawal record %d status error %v", record.ID, err)
+		return err
+	}
+	return nil
+}
+
 func processWithdrawalRecords(ctx context.Context) error {
 	innerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error)
-	
+
 	go func(ctx context.Context, errCh chan<- error) {
 		appConfig := config.GetConfig()
 		db := config.GetDB()
-	
+
 		var startID uint
 		limit := appConfig.Tasks.ProcessWithdrawalRequests.BatchSize
-	
+
 		for {
 			records, err := getUnfinishedWithdrawalRecords(ctx, db, startID, int(limit))
 			if err != nil {
 				errCh <- err
 				return
 			}
-	
+
 			if len(records) > 0 {
 				startID = records[len(records)-1].ID
 				for _, record := range records {
@@ -385,26 +401,19 @@ func processWithdrawalRecords(ctx context.Context) error {
 						deadline := record.CreatedAt.Add(time.Duration(config.GetConfig().Tasks.ProcessWithdrawalRequests.Timeout) * time.Second)
 						ctx, cancel := context.WithDeadline(ctx, deadline)
 						defer cancel()
-	
+
 						for {
 							log.Infof("ProcessWithdrawalRecords: process withdrawal record %d", record.ID)
 							c := make(chan error)
 							go func() {
 								c <- processWithdrawalRecord(ctx, db, record)
 							}()
-	
+
 							select {
 							case <-ctx.Done():
 								err = ctx.Err()
 								if err == context.DeadlineExceeded {
-									log.Infof("ProcessWithdrawalRecords: process withdrawal record %d timeout", record.ID)
-									if err := relay_api.RejectWithdrawalRequest(ctx, record.RemoteID); err != nil {
-										log.Errorf("ProcessWithdrawalRecords: reject timeout withdrawal record %d error %v", record.ID, err)
-										time.Sleep(5 * time.Second)
-										continue
-									}
-									if err := record.UpdateStatus(ctx, db, models.WithdrawStatusFinished); err != nil {
-										log.Errorf("ProcessWithdrawalRecords: update timeout withdrawal record %d status error %v", record.ID, err)
+									if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
 										time.Sleep(5 * time.Second)
 										continue
 									}
