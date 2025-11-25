@@ -9,6 +9,7 @@ import (
 	"crynux_relay_wallet/utils"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -390,7 +391,10 @@ func processWithdrawalRecords(ctx context.Context) error {
 		for {
 			records, err := getUnfinishedWithdrawalRecords(ctx, db, startID, int(limit))
 			if err != nil {
-				errCh <- err
+				select {
+				case errCh <- err:
+				case <-ctx.Done():
+				}
 				return
 			}
 
@@ -414,9 +418,10 @@ func processWithdrawalRecords(ctx context.Context) error {
 								err = ctx.Err()
 								if err == context.DeadlineExceeded {
 									if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
-										time.Sleep(5 * time.Second)
-										continue
+										errCh <- fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
+										return
 									}
+									errCh <- fmt.Errorf("process withdrawal request timeout: %d", record.ID)
 								} else {
 									return
 								}
@@ -424,7 +429,10 @@ func processWithdrawalRecords(ctx context.Context) error {
 								if err != nil {
 									log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)
 									if IsWithdrawalRequestError(err) {
-										errCh <- err
+										select {
+										case errCh <- err:
+										case <-ctx.Done():
+										}
 										return
 									}
 									time.Sleep(5 * time.Second)
