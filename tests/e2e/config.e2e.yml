@@ -1,0 +1,69 @@
+---
+environment: "production"
+db:
+  driver: "mysql"
+  connection: "crynux_wallet:crynuxwalletpass@(mysql:3306)/crynux_wallet?parseTime=true"
+  log:
+    level: "info"
+    output: "/app/data/logs/crynux_relay_wallet_db.log"
+    max_file_size: 100
+    max_days: 30
+    max_file_num: 5
+log:
+  level: "info"
+  output: "/app/data/logs/crynux_relay_wallet.log"
+  max_file_size: 100
+  max_days: 30
+  max_file_num: 5
+  heartbeat_log_file: "/app/data/logs/heartbeat.log"
+  alert_log_file: "/app/data/logs/alert.log"
+blockchains:
+  dymension:
+    rps: 20
+    rpc_endpoint: "https://json-rpc.testnet-dym.crynux.io"
+    gas_limit: 4294967
+    gas_price: 0
+    chain_id: 1313161573
+    account:
+      address: ""
+      private_key_file: "/app/config/blockchain_privkey.txt"
+    contracts:
+      benefit_address: "0xa4AC846337794C93d68D387Be77663e32AD415bb"
+    max_retries: 3
+    retry_interval: 3
+    receipt_wait_time: 30
+    sent_transaction_count_limit: 200
+  near:
+    rps: 20
+    rpc_endpoint: "https://json-rpc.testnet-near.crynux.io"
+    gas_limit: 4294967
+    gas_price: 0
+    chain_id: 1313161574
+    account:
+      address: ""
+      private_key_file: "/app/config/blockchain_privkey.txt"
+    contracts:
+      benefit_address: "0xf57a8f8F7ab52EBD7971A65e9B44C767d3119c4f"
+    max_retries: 3
+    retry_interval: 3
+    receipt_wait_time: 30
+    sent_transaction_count_limit: 200
+relay:
+  api:
+    host: "http://crynux_relay:8080"
+    private_key_file: "/app/config/relay_api_privkey.txt"
+tasks:
+  sync_task_fee_logs:
+    interval_seconds: 5
+    batch_size: 100
+    max_task_fee_amount: 100
+    max_address_logs_count_in_batch: 50
+    max_new_address_count_in_batch: 20
+  sync_withdrawal_requests:
+    interval_seconds: 5
+    batch_size: 100
+    min_withdrawal_amount: 1
+  process_withdrawal_requests:
+    interval_seconds: 5
+    batch_size: 10
+    timeout: 300
