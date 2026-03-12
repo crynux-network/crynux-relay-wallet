@@ -20,10 +20,12 @@ Task fee log synchronization starts from `tasks.StartSyncTaskFeeLogs`, which is 
 `GetTaskFeeLogs` supports incremental, gap-free syncing via a pivot ID. On startup, the Relay Wallet reads the last synced task fee log ID from the local database (stored in `models/system.go`). If the record is empty, no prior sync has occurred, so syncing begins at ID=0. Otherwise, the stored ID is passed to the API, which returns records starting from the next ID.
 
 After retrieving records, the wallet updates, within a single database transaction, both the node relay account balances and the latest task fee log ID to ensure they are always consistent.
+Detailed type handling rules, validation requirements, checkpoint behavior, and withdrawal gate semantics are specified in [relay_account_log_processing.md](./relay_account_log_processing.md). Implementations MUST follow that specification.
 
 ### Withdrawal Request Processing
 
-TODO
+Withdrawal handling uses a two-stage pipeline: `tasks.StartSyncWithdrawalRequests` pulls and stores gated requests from Relay, and `tasks.StartProcessWithdrawalRequests` executes on-chain transfers and reports fulfill or reject back to Relay.
+Detailed withdrawal request synchronization, validation, execution, callback, timeout handling, and balance ownership rules are specified in [withdrawal_processing.md](./withdrawal_processing.md). Implementations MUST follow that specification.
 
 ### Other Components
 

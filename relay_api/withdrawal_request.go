@@ -2,8 +2,8 @@ package relay_api
 
 import (
 	"bytes"
-	"crynux_relay_wallet/config"
 	"context"
+	"crynux_relay_wallet/config"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,14 +21,14 @@ const (
 )
 
 type WithdrawalRequest struct {
-	ID             uint           `json:"id"`
-	CreatedAt      uint64         `json:"created_at"`
-	Address        string         `json:"address"`
-	BenefitAddress string         `json:"benefit_address"`
-	Amount         string         `json:"amount"`
-	Network        string         `json:"network"`
-	Status         WithdrawStatus `json:"status"`
-	TaskFeeEventID uint           `json:"task_fee_event_id"`
+	ID                  uint           `json:"id"`
+	CreatedAt           uint64         `json:"created_at"`
+	Address             string         `json:"address"`
+	BenefitAddress      string         `json:"benefit_address"`
+	Amount              string         `json:"amount"`
+	Network             string         `json:"network"`
+	Status              WithdrawStatus `json:"status"`
+	RelayAccountEventID uint           `json:"relay_account_event_id"`
 }
 
 type GetWithdrawalRequestsInput struct {
@@ -90,7 +90,7 @@ func GetWithdrawalRequests(ctx context.Context, pivotWithdrawalRequestID uint, l
 }
 
 type FulfillWithdrawalRequestInput struct {
-	ID uint `json:"id"`
+	ID     uint   `json:"id"`
 	TxHash string `json:"tx_hash" description:"Transaction hash"`
 }
 
@@ -103,9 +103,8 @@ type FulfillWithdrawalRequestInputWithSignature struct {
 func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint, txHash string) error {
 	conf := config.GetConfig()
 
-	
 	input := FulfillWithdrawalRequestInput{
-		ID: withdrawalRequestID,
+		ID:     withdrawalRequestID,
 		TxHash: txHash,
 	}
 
@@ -116,8 +115,8 @@ func FulfillWithdrawalRequest(ctx context.Context, withdrawalRequestID uint, txH
 
 	inputWithSignature := FulfillWithdrawalRequestInputWithSignature{
 		FulfillWithdrawalRequestInput: input,
-		Timestamp: timestamp,
-		Signature: signature,
+		Timestamp:                     timestamp,
+		Signature:                     signature,
 	}
 
 	body, err := json.Marshal(inputWithSignature)
@@ -163,7 +162,6 @@ type RejectWithdrawalRequestInputWithSignature struct {
 func RejectWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) error {
 	conf := config.GetConfig()
 
-	
 	input := RejectWithdrawalRequestInput{
 		ID: withdrawalRequestID,
 	}
@@ -175,8 +173,8 @@ func RejectWithdrawalRequest(ctx context.Context, withdrawalRequestID uint) erro
 
 	inputWithSignature := RejectWithdrawalRequestInputWithSignature{
 		RejectWithdrawalRequestInput: input,
-		Timestamp: timestamp,
-		Signature: signature,
+		Timestamp:                    timestamp,
+		Signature:                    signature,
 	}
 
 	body, err := json.Marshal(inputWithSignature)

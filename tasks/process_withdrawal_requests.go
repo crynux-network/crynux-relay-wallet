@@ -197,7 +197,7 @@ func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 
 		end := 0
 		for _, request := range requests {
-			if request.TaskFeeEventID > taskFeeCheckpoint.LatestTaskFeeLogID {
+			if request.RelayAccountEventID > taskFeeCheckpoint.LatestTaskFeeLogID {
 				break
 			}
 			end++

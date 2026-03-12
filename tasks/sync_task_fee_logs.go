@@ -65,13 +65,21 @@ func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) 
 	merged := make(map[string]*big.Int)
 
 	for _, log := range logs {
-		amount, success := new(big.Int).SetString(log.TaskFee, 10)
+		if log.Type == relay_api.TaskFeeLogTypeWithdraw || log.Type == relay_api.TaskFeeLogTypeWithdrawRefund {
+			continue
+		}
+
+		amount, success := new(big.Int).SetString(log.Amount, 10)
 		if !success {
 			return nil, ErrTaskFeeAmountInvalid
 		}
 
 		if _, ok := merged[log.Address]; !ok {
-			merged[log.Address] = amount
+			merged[log.Address] = big.NewInt(0)
+		}
+
+		if log.Type == relay_api.TaskFeeLogTypeTaskPayment {
+			merged[log.Address].Sub(merged[log.Address], amount)
 		} else {
 			merged[log.Address].Add(merged[log.Address], amount)
 		}
@@ -86,11 +94,15 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 
 	addressLogCount := make(map[string]int)
 	for _, log := range logs {
-		amount, success := new(big.Int).SetString(log.TaskFee, 10)
+		if log.Type == relay_api.TaskFeeLogTypeWithdraw || log.Type == relay_api.TaskFeeLogTypeWithdrawRefund {
+			continue
+		}
+
+		amount, success := new(big.Int).SetString(log.Amount, 10)
 		if !success {
 			return ErrTaskFeeAmountInvalid
 		}
-		if log.Type != relay_api.TaskFeeLogTypeBought && amount.Cmp(maxTaskFeeAmount) > 0 {
+		if log.Type != relay_api.TaskFeeLogTypeDeposit && amount.Cmp(maxTaskFeeAmount) > 0 {
 			return ErrTaskFeeAmountTooLarge
 		}
 		addressLogCount[log.Address]++
@@ -104,6 +116,10 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 	}
 	if uint(maxCount) > appConfig.Tasks.SyncTaskFeeLogs.MaxAddressLogsCountInBatch {
 		return ErrTaskFeeAddressCountTooLarge
+	}
+
+	if len(addressLogCount) == 0 {
+		return nil
 	}
 
 	addresses := make([]string, 0, len(addressLogCount))

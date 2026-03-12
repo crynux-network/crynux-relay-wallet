@@ -1,8 +1,8 @@
 package relay_api
 
 import (
-	"crynux_relay_wallet/config"
 	"context"
+	"crynux_relay_wallet/config"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,17 +14,21 @@ import (
 type TaskFeeLogType int8
 
 const (
-	TaskFeeLogTypeTask TaskFeeLogType = iota
-	TaskFeeLogTypeDraw
-	TaskFeeLogTypeWithdrawalFee
-	TaskFeeLogTypeBought
+	TaskFeeLogTypeTaskIncome          TaskFeeLogType = 0
+	TaskFeeLogTypeDaoTaskShare        TaskFeeLogType = 1
+	TaskFeeLogTypeWithdrawalFeeIncome TaskFeeLogType = 2
+	TaskFeeLogTypeDeposit             TaskFeeLogType = 3
+	TaskFeeLogTypeTaskPayment         TaskFeeLogType = 4
+	TaskFeeLogTypeTaskRefund          TaskFeeLogType = 5
+	TaskFeeLogTypeWithdraw            TaskFeeLogType = 6
+	TaskFeeLogTypeWithdrawRefund      TaskFeeLogType = 7
 )
 
 type TaskFeeLog struct {
-	ID        uint   `json:"id"`
-	CreatedAt uint64 `json:"created_at"`
-	Address   string `json:"address"`
-	TaskFee   string         `json:"task_fee"`
+	ID        uint           `json:"id"`
+	CreatedAt uint64         `json:"created_at"`
+	Address   string         `json:"address"`
+	Amount    string         `json:"amount"`
 	Type      TaskFeeLogType `json:"type"`
 }
 
@@ -41,7 +45,7 @@ func GetTaskFeeLogs(ctx context.Context, pivotTaskFeeLogID uint, limit int) ([]T
 
 	conf := config.GetConfig()
 
-	req, err := http.NewRequest("GET", conf.Relay.Api.Host+"/v1/task_fee/logs", nil)
+	req, err := http.NewRequest("GET", conf.Relay.Api.Host+"/v1/relay_account/logs", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,10 @@
 
 Before making any changes, consult `./README.md` and `./docs/architecture.md` for a high-level project overview. All modifications must be consistent with the existing architecture and design.
 
+### Clean Code
+
+Before adding new code, first check whether existing logic can be reused. Prefer extracting reusable code into a dedicated function, class, or file, and place it in the most appropriate location. Remove duplicated code and avoid adding redundant implementations of the same functionality.
+
 ### Data Integrity
 
 Because the Relay Wallet handles funds, the correctness of financial data must be strictly guaranteed under all circumstances.
