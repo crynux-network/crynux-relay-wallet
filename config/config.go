@@ -71,15 +71,8 @@ func checkBlockchainAccount() error {
 			return errors.New("blockchain account address not set")
 		}
 	
-		var pk string
-		if strings.HasPrefix(blockchain.Account.PrivateKey, "0x") {
-			pk = blockchain.Account.PrivateKey[2:]
-		} else {
-			pk = blockchain.Account.PrivateKey
-		}
-	
 		// Check private key and address
-		privateKey, err := crypto.HexToECDSA(pk)
+		privateKey, err := crypto.HexToECDSA(blockchain.Account.PrivateKey)
 		if err != nil {
 			return err
 		}
@@ -106,7 +99,15 @@ func GetPrivateKey(file string) string {
 	if err != nil {
 		panic(err)
 	}
-	return strings.TrimSpace(string(b))
+	return normalizePrivateKey(string(b))
+}
+
+func normalizePrivateKey(privateKey string) string {
+	privateKey = strings.TrimSpace(privateKey)
+	if strings.HasPrefix(privateKey, "0x") || strings.HasPrefix(privateKey, "0X") {
+		return privateKey[2:]
+	}
+	return privateKey
 }
 
 func GetTestPrivateKey() string {
