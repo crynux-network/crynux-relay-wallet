@@ -7,6 +7,8 @@
   2. Build the image from `Dockerfile` with tag `crynux-relay-wallet:e2e`.
   3. Verify `crynux-relay-wallet:e2e` exists locally.
 
+- DO NOT reuse existing images. Always rebuild the image from source code.
+
 ## Prepare the mount folder for the Docker image
 
 - Goal: Prepare wallet host-side files in a Docker mount workspace for local e2e runs.
@@ -37,6 +39,7 @@
 - Database requirements:
   - A database instance must be available for the wallet container.
   - Configure the database connection in `<mount-root>/config/config.yml`.
+  - Always reset the database (delete all the mounted database files) before starting the test.
 
 ## Prepare the system wallet account
 
