@@ -7,7 +7,7 @@
   2. Build the image from `Dockerfile` with tag `crynux-relay-wallet:e2e`.
   3. Verify `crynux-relay-wallet:e2e` exists locally.
 
-- DO NOT reuse existing images. Always rebuild the image from source code.
+- DO NOT reuse existing images. Always rebuild the image before starting the container.
 
 ## Prepare the mount folder for the Docker image
 
@@ -57,6 +57,7 @@
   - A `0x` prefix is allowed in `<mount-root>/config/blockchain_privkey.txt`.
   - The key material in `<mount-root>/config/blockchain_privkey.txt` must not contain trailing whitespace.
   - `blockchains.<network>.account.private_key_file` in `<mount-root>/config/config.yml` must point to `/app/config/blockchain_privkey.txt`.
+  - `relay.deposit_address` in `<mount-root>/config/config.yml` must match Relay's configured relay account deposit address.
 
 ## Prepare the Relay API key
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/spf13/viper"
 )
@@ -56,6 +57,9 @@ func InitConfig(configPath string) error {
 	if err := checkBlockchainAccount(); err != nil {
 		return err
 	}
+	if err := checkRelayConfig(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -66,31 +70,42 @@ func checkBlockchainAccount() error {
 		if blockchain.Account.PrivateKey == "" {
 			return errors.New("blockchain account private key not set")
 		}
-	
+
 		if blockchain.Account.Address == "" {
 			return errors.New("blockchain account address not set")
 		}
-	
+
 		// Check private key and address
 		privateKey, err := crypto.HexToECDSA(blockchain.Account.PrivateKey)
 		if err != nil {
 			return err
 		}
-	
+
 		publicKey := privateKey.Public()
-	
+
 		publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 		if !ok {
 			return errors.New("error casting public key to ECDSA")
 		}
-	
+
 		address := crypto.PubkeyToAddress(*publicKeyECDSA).Hex()
-	
+
 		if address != blockchain.Account.Address {
 			return errors.New("account address and private key mismatch")
 		}
 	}
 
+	return nil
+}
+
+func checkRelayConfig() error {
+	depositAddress := appConfig.Relay.DepositAddress
+	if depositAddress == "" {
+		return errors.New("relay deposit address not set")
+	}
+	if !common.IsHexAddress(depositAddress) {
+		return errors.New("relay deposit address is invalid")
+	}
 	return nil
 }
 

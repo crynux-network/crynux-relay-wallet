@@ -30,6 +30,7 @@ type TaskFeeLog struct {
 	Address   string         `json:"address"`
 	Amount    string         `json:"amount"`
 	Type      TaskFeeLogType `json:"type"`
+	Payload   string         `json:"payload"`
 }
 
 type GetTaskFeeLogsInput struct {
@@ -42,10 +43,9 @@ type GetTaskFeeLogsOutput struct {
 }
 
 func GetTaskFeeLogs(ctx context.Context, pivotTaskFeeLogID uint, limit int) ([]TaskFeeLog, error) {
-
 	conf := config.GetConfig()
 
-	req, err := http.NewRequest("GET", conf.Relay.Api.Host+"/v1/relay_account/logs", nil)
+	req, err := http.NewRequest("GET", conf.Relay.Api.Host+"/v1/relay_account/event_logs", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -83,10 +83,8 @@ func GetTaskFeeLogs(ctx context.Context, pivotTaskFeeLogID uint, limit int) ([]T
 	}
 
 	var output GetTaskFeeLogsOutput
-
 	if err := json.NewDecoder(resp.Body).Decode(&output); err != nil {
 		return nil, err
 	}
-
 	return output.Data, nil
 }
