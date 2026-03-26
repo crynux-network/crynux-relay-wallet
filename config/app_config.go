@@ -57,6 +57,7 @@ type AppConfig struct {
 			PrivateKey     string `mapstructure:"private_key"`
 			PrivateKeyFile string `mapstructure:"private_key_file"`
 		} `mapstructure:"api"`
+		DepositAddress string `mapstructure:"deposit_address"`
 	} `mapstructure:"relay"`
 
 	Tasks struct {

@@ -6,7 +6,7 @@ This document defines how the Relay Wallet processes Relay Account logs and how 
 
 ## Log Source and Schema
 
-The wallet MUST fetch account logs from `/v1/relay_account/logs`.
+The wallet MUST fetch account logs from `/v1/relay_account/event_logs`.
 
 Each log record MUST include:
 
@@ -15,6 +15,7 @@ Each log record MUST include:
 - `address`
 - `amount`
 - `type`
+- `payload` (for `Deposit`, payload includes `tx_hash` and `network`)
 
 ## Log Type Handling Rules
 
@@ -36,6 +37,12 @@ Under current implementation behavior, any type other than `TaskPayment`, `Withd
 For each fetched batch, the wallet MUST validate:
 
 - `amount` MUST be parseable as an integer string.
+- For `Deposit`, payload MUST be valid JSON and include `tx_hash` and `network`.
+- For `Deposit`, the wallet MUST independently verify the transaction on chain before balance apply:
+  - transaction exists and is successful
+  - transaction receiver equals configured relay deposit address
+  - transaction sender equals log `address`
+  - transaction value equals log `amount`
 - Per-log max amount threshold MUST be enforced for all types except `Deposit`.
 - Per-address log count threshold MUST be enforced using only non-ignored logs.
 - New-address count threshold MUST be enforced using only non-ignored logs.

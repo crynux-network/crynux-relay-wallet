@@ -2,15 +2,22 @@ package tasks
 
 import (
 	"context"
+	"crynux_relay_wallet/blockchain"
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/models"
 	"crynux_relay_wallet/relay_api"
 	"crynux_relay_wallet/utils"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -36,6 +43,13 @@ var ErrTaskFeeAmountTooLarge = NewTaskFeeError("task fee amount is greater than 
 var ErrTaskFeeAmountInvalid = NewTaskFeeError("cannot parse amount from task fee log")
 var ErrTaskFeeAddressCountTooLarge = NewTaskFeeError("task fee logs count of a single address is greater than max address count threshold")
 var ErrTaskFeeNewAddressCountTooLarge = NewTaskFeeError("task fee logs count of new addresses is greater than max new address count threshold")
+var ErrTaskFeeDepositPayloadInvalid = NewTaskFeeError("deposit log payload is invalid")
+var ErrTaskFeeDepositTxMismatch = NewTaskFeeError("deposit transaction does not match relay account event log")
+
+type depositPayload struct {
+	TxHash  string `json:"tx_hash"`
+	Network string `json:"network"`
+}
 
 func StartSyncTaskFeeLogs(ctx context.Context) error {
 
@@ -64,28 +78,85 @@ func StartSyncTaskFeeLogs(ctx context.Context) error {
 func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) {
 	merged := make(map[string]*big.Int)
 
-	for _, log := range logs {
-		if log.Type == relay_api.TaskFeeLogTypeWithdraw || log.Type == relay_api.TaskFeeLogTypeWithdrawRefund {
+	for _, eventLog := range logs {
+		if eventLog.Type == relay_api.TaskFeeLogTypeWithdraw || eventLog.Type == relay_api.TaskFeeLogTypeWithdrawRefund {
 			continue
 		}
 
-		amount, success := new(big.Int).SetString(log.Amount, 10)
+		amount, success := new(big.Int).SetString(eventLog.Amount, 10)
 		if !success {
 			return nil, ErrTaskFeeAmountInvalid
 		}
 
-		if _, ok := merged[log.Address]; !ok {
-			merged[log.Address] = big.NewInt(0)
+		if _, ok := merged[eventLog.Address]; !ok {
+			merged[eventLog.Address] = big.NewInt(0)
 		}
 
-		if log.Type == relay_api.TaskFeeLogTypeTaskPayment {
-			merged[log.Address].Sub(merged[log.Address], amount)
+		if eventLog.Type == relay_api.TaskFeeLogTypeTaskPayment {
+			merged[eventLog.Address].Sub(merged[eventLog.Address], amount)
 		} else {
-			merged[log.Address].Add(merged[log.Address], amount)
+			merged[eventLog.Address].Add(merged[eventLog.Address], amount)
 		}
 	}
 
 	return merged, nil
+}
+
+func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) error {
+	amount, success := new(big.Int).SetString(eventLog.Amount, 10)
+	if !success {
+		return ErrTaskFeeAmountInvalid
+	}
+
+	var payload depositPayload
+	if strings.TrimSpace(eventLog.Payload) == "" {
+		return ErrTaskFeeDepositPayloadInvalid
+	}
+	if err := json.Unmarshal([]byte(eventLog.Payload), &payload); err != nil {
+		return ErrTaskFeeDepositPayloadInvalid
+	}
+	txHashBytes, err := hexutil.Decode(payload.TxHash)
+	if payload.TxHash == "" || payload.Network == "" || err != nil || len(txHashBytes) != common.HashLength {
+		return ErrTaskFeeDepositPayloadInvalid
+	}
+
+	client, err := blockchain.GetBlockchainClient(payload.Network)
+	if err != nil {
+		return err
+	}
+
+	txHash := common.HexToHash(payload.TxHash)
+	receipt, err := client.RpcClient.TransactionReceipt(ctx, txHash)
+	if errors.Is(err, ethereum.NotFound) {
+		return fmt.Errorf("deposit transaction not found: %s", payload.TxHash)
+	}
+	if err != nil {
+		return err
+	}
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return ErrTaskFeeDepositTxMismatch
+	}
+
+	tx, _, err := client.RpcClient.TransactionByHash(ctx, txHash)
+	if errors.Is(err, ethereum.NotFound) {
+		return fmt.Errorf("deposit transaction not found: %s", payload.TxHash)
+	}
+	if err != nil {
+		return err
+	}
+	if tx.To() == nil || !strings.EqualFold(tx.To().Hex(), config.GetConfig().Relay.DepositAddress) {
+		return ErrTaskFeeDepositTxMismatch
+	}
+
+	from, err := types.Sender(types.LatestSignerForChainID(client.ChainID), tx)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(from.Hex(), eventLog.Address) || tx.Value().Cmp(amount) != 0 {
+		return ErrTaskFeeDepositTxMismatch
+	}
+
+	return nil
 }
 
 func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFeeLog) error {
@@ -93,19 +164,23 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 	maxTaskFeeAmount := utils.EtherToWei(big.NewInt(int64(appConfig.Tasks.SyncTaskFeeLogs.MaxTaskFeeAmount)))
 
 	addressLogCount := make(map[string]int)
-	for _, log := range logs {
-		if log.Type == relay_api.TaskFeeLogTypeWithdraw || log.Type == relay_api.TaskFeeLogTypeWithdrawRefund {
+	for _, eventLog := range logs {
+		if eventLog.Type == relay_api.TaskFeeLogTypeWithdraw || eventLog.Type == relay_api.TaskFeeLogTypeWithdrawRefund {
 			continue
 		}
 
-		amount, success := new(big.Int).SetString(log.Amount, 10)
+		amount, success := new(big.Int).SetString(eventLog.Amount, 10)
 		if !success {
 			return ErrTaskFeeAmountInvalid
 		}
-		if log.Type != relay_api.TaskFeeLogTypeDeposit && amount.Cmp(maxTaskFeeAmount) > 0 {
+		if eventLog.Type == relay_api.TaskFeeLogTypeDeposit {
+			if err := validateDepositLog(ctx, eventLog); err != nil {
+				return err
+			}
+		} else if amount.Cmp(maxTaskFeeAmount) > 0 {
 			return ErrTaskFeeAmountTooLarge
 		}
-		addressLogCount[log.Address]++
+		addressLogCount[eventLog.Address]++
 	}
 
 	var maxCount int
