@@ -21,6 +21,7 @@ Task fee log synchronization starts from `tasks.StartSyncTaskFeeLogs`, which is 
 
 After retrieving records, the wallet updates, within a single database transaction, both the node relay account balances and the latest task fee log ID to ensure they are always consistent.
 Detailed type handling rules, validation requirements, checkpoint behavior, and withdrawal gate semantics are specified in [relay_account_log_processing.md](./relay_account_log_processing.md). Implementations MUST follow that specification.
+Deposit-specific validation, deduplication, and fail-fast rules are specified in [deposit_processing.md](./deposit_processing.md). Implementations MUST follow that specification.
 
 ### Withdrawal Request Processing
 

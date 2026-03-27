@@ -60,6 +60,7 @@ tasks:
     max_task_fee_amount: 100
     max_address_logs_count_in_batch: 50
     max_new_address_count_in_batch: 20
+    deposit_max_age_seconds: 259200
   sync_withdrawal_requests:
     interval_seconds: 5
     batch_size: 100

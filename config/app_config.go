@@ -67,6 +67,7 @@ type AppConfig struct {
 			MaxTaskFeeAmount           uint64 `mapstructure:"max_task_fee_amount"`
 			MaxAddressLogsCountInBatch uint   `mapstructure:"max_address_logs_count_in_batch"`
 			MaxNewAddressCountInBatch  uint   `mapstructure:"max_new_address_count_in_batch"`
+			DepositMaxAgeSeconds       uint64 `mapstructure:"deposit_max_age_seconds"`
 		} `mapstructure:"sync_task_fee_logs"`
 		SyncWithdrawalRequests struct {
 			IntervalSeconds     uint   `mapstructure:"interval_seconds"`
