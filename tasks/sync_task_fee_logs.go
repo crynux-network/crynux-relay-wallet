@@ -20,6 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TaskFeeError struct {
@@ -45,6 +46,8 @@ var ErrTaskFeeAddressCountTooLarge = NewTaskFeeError("task fee logs count of a s
 var ErrTaskFeeNewAddressCountTooLarge = NewTaskFeeError("task fee logs count of new addresses is greater than max new address count threshold")
 var ErrTaskFeeDepositPayloadInvalid = NewTaskFeeError("deposit log payload is invalid")
 var ErrTaskFeeDepositTxMismatch = NewTaskFeeError("deposit transaction does not match relay account event log")
+var ErrTaskFeeDepositTxHashDuplicate = NewTaskFeeError("deposit transaction hash already exists")
+var ErrTaskFeeDepositTxTooOld = NewTaskFeeError("deposit transaction is older than max age threshold")
 
 type depositPayload struct {
 	TxHash  string `json:"tx_hash"`
@@ -102,22 +105,34 @@ func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) 
 	return merged, nil
 }
 
+func parseDepositPayload(eventLog relay_api.TaskFeeLog) (*depositPayload, error) {
+	var payload depositPayload
+	if strings.TrimSpace(eventLog.Payload) == "" {
+		return nil, ErrTaskFeeDepositPayloadInvalid
+	}
+	if err := json.Unmarshal([]byte(eventLog.Payload), &payload); err != nil {
+		return nil, ErrTaskFeeDepositPayloadInvalid
+	}
+	txHashBytes, err := hexutil.Decode(payload.TxHash)
+	if payload.TxHash == "" || payload.Network == "" || err != nil || len(txHashBytes) != common.HashLength {
+		return nil, ErrTaskFeeDepositPayloadInvalid
+	}
+	return &payload, nil
+}
+
+func normalizedDepositIdentity(payload *depositPayload) (string, string) {
+	return strings.ToLower(payload.Network), strings.ToLower(common.HexToHash(payload.TxHash).Hex())
+}
+
 func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) error {
 	amount, success := new(big.Int).SetString(eventLog.Amount, 10)
 	if !success {
 		return ErrTaskFeeAmountInvalid
 	}
 
-	var payload depositPayload
-	if strings.TrimSpace(eventLog.Payload) == "" {
-		return ErrTaskFeeDepositPayloadInvalid
-	}
-	if err := json.Unmarshal([]byte(eventLog.Payload), &payload); err != nil {
-		return ErrTaskFeeDepositPayloadInvalid
-	}
-	txHashBytes, err := hexutil.Decode(payload.TxHash)
-	if payload.TxHash == "" || payload.Network == "" || err != nil || len(txHashBytes) != common.HashLength {
-		return ErrTaskFeeDepositPayloadInvalid
+	payload, err := parseDepositPayload(eventLog)
+	if err != nil {
+		return err
 	}
 
 	client, err := blockchain.GetBlockchainClient(payload.Network)
@@ -154,6 +169,18 @@ func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) erro
 	}
 	if !strings.EqualFold(from.Hex(), eventLog.Address) || tx.Value().Cmp(amount) != 0 {
 		return ErrTaskFeeDepositTxMismatch
+	}
+
+	if receipt.BlockNumber == nil {
+		return ErrTaskFeeDepositTxMismatch
+	}
+	block, err := client.RpcClient.BlockByNumber(ctx, receipt.BlockNumber)
+	if err != nil {
+		return err
+	}
+	maxAgeSeconds := config.GetConfig().Tasks.SyncTaskFeeLogs.DepositMaxAgeSeconds
+	if block.Time()+maxAgeSeconds < uint64(time.Now().Unix()) {
+		return ErrTaskFeeDepositTxTooOld
 	}
 
 	return nil
@@ -235,57 +262,114 @@ func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 	for address := range merged {
 		addresses = append(addresses, address)
 	}
+	if len(addresses) == 0 {
+		return nil
+	}
 
 	dbCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return db.WithContext(dbCtx).Transaction(func(tx *gorm.DB) error {
-		var accounts []*models.RelayAccount
-		if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
+	var accounts []*models.RelayAccount
+	if err := db.WithContext(dbCtx).Model(&models.RelayAccount{}).Where("address IN (?)", addresses).Find(&accounts).Error; err != nil {
+		return err
+	}
+
+	existedAddresses := make([]string, len(accounts))
+	existedAddressMap := make(map[string]bool)
+	for i, account := range accounts {
+		existedAddresses[i] = account.Address
+		existedAddressMap[account.Address] = true
+	}
+
+	for _, account := range accounts {
+		amount, ok := merged[account.Address]
+		if !ok {
+			continue
+		}
+		account.Balance.Add(&account.Balance.Int, amount)
+	}
+
+	var newAccounts []*models.RelayAccount
+	for address, amount := range merged {
+		if _, ok := existedAddressMap[address]; !ok {
+			newAccounts = append(newAccounts, &models.RelayAccount{Address: address, Balance: models.BigInt{Int: *amount}})
+		}
+	}
+
+	if len(newAccounts) > 0 {
+		if err := db.WithContext(dbCtx).CreateInBatches(newAccounts, 100).Error; err != nil {
 			return err
 		}
+	}
 
-		existedAddresses := make([]string, len(accounts))
-		existedAddressMap := make(map[string]bool)
-		for i, account := range accounts {
-			existedAddresses[i] = account.Address
-			existedAddressMap[account.Address] = true
-		}
-
+	if len(accounts) > 0 {
+		var cases string
 		for _, account := range accounts {
-			amount, ok := merged[account.Address]
-			if !ok {
-				continue
-			}
-			account.Balance.Add(&account.Balance.Int, amount)
+			cases += fmt.Sprintf(" WHEN address = '%s' THEN '%s'", account.Address, account.Balance.String())
+		}
+		if err := db.WithContext(dbCtx).Model(&models.RelayAccount{}).Where("address IN (?)", existedAddresses).
+			Update("balance", gorm.Expr("CASE"+cases+" END")).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func buildDepositRecords(logs []relay_api.TaskFeeLog) ([]*models.DepositRecord, error) {
+	depositRecords := make([]*models.DepositRecord, 0)
+	for _, eventLog := range logs {
+		if eventLog.Type != relay_api.TaskFeeLogTypeDeposit {
+			continue
 		}
 
-		var newAccounts []*models.RelayAccount
-		for address, amount := range merged {
-			if _, ok := existedAddressMap[address]; !ok {
-				newAccounts = append(newAccounts, &models.RelayAccount{Address: address, Balance: models.BigInt{Int: *amount}})
-			}
+		amount, success := new(big.Int).SetString(eventLog.Amount, 10)
+		if !success {
+			return nil, ErrTaskFeeAmountInvalid
 		}
 
-		if len(newAccounts) > 0 {
-			if err := tx.CreateInBatches(newAccounts, 100).Error; err != nil {
-				return err
-			}
+		payload, err := parseDepositPayload(eventLog)
+		if err != nil {
+			return nil, err
 		}
+		network, txHash := normalizedDepositIdentity(payload)
 
-		if len(accounts) > 0 {
-			var cases string
-			for _, account := range accounts {
-				cases += fmt.Sprintf(" WHEN address = '%s' THEN '%s'", account.Address, account.Balance.String())
-			}
-			if err := tx.Model(&models.RelayAccount{}).Where("address IN (?)", existedAddresses).
-				Update("balance", gorm.Expr("CASE"+cases+" END")).Error; err != nil {
-				return err
-			}
-		}
+		depositRecords = append(depositRecords, &models.DepositRecord{
+			Network:             network,
+			TxHash:              txHash,
+			DepositAddress:      strings.ToLower(config.GetConfig().Relay.DepositAddress),
+			FromAddress:         strings.ToLower(eventLog.Address),
+			Amount:              models.BigInt{Int: *new(big.Int).Set(amount)},
+			RelayAccountEventID: eventLog.ID,
+		})
+	}
+	return depositRecords, nil
+}
 
+func saveDepositRecords(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFeeLog) error {
+	depositRecords, err := buildDepositRecords(logs)
+	if err != nil {
+		return err
+	}
+
+	if len(depositRecords) == 0 {
 		return nil
-	})
+	}
+
+	dbCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result := db.WithContext(dbCtx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "network"}, {Name: "tx_hash"}},
+		DoNothing: true,
+	}).CreateInBatches(depositRecords, 100)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != int64(len(depositRecords)) {
+		return ErrTaskFeeDepositTxHashDuplicate
+	}
+	return nil
 }
 
 func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
@@ -318,6 +402,10 @@ func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 		}
 
 		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := saveDepositRecords(ctx, tx, logs); err != nil {
+				return err
+			}
+
 			if err := processTaskFeeLogs(ctx, tx, logs); err != nil {
 				return err
 			}

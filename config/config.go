@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/spf13/viper"
 )
@@ -57,9 +56,6 @@ func InitConfig(configPath string) error {
 	if err := checkBlockchainAccount(); err != nil {
 		return err
 	}
-	if err := checkRelayConfig(); err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -95,17 +91,6 @@ func checkBlockchainAccount() error {
 		}
 	}
 
-	return nil
-}
-
-func checkRelayConfig() error {
-	depositAddress := appConfig.Relay.DepositAddress
-	if depositAddress == "" {
-		return errors.New("relay deposit address not set")
-	}
-	if !common.IsHexAddress(depositAddress) {
-		return errors.New("relay deposit address is invalid")
-	}
 	return nil
 }
 
