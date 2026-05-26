@@ -15,7 +15,9 @@ Each log record MUST include:
 - `address`
 - `amount`
 - `type`
-- `payload` (for `Deposit`, payload includes `tx_hash` and `network`)
+- `payload`
+
+For `Deposit`, payload MUST include `tx_hash` and `network`. For `VestingCreated`, payload MUST include the signed vesting schedule fields and signature. For `VestingRelease`, payload MUST include only `vesting_id`.
 
 ## Log Type Handling Rules
 
@@ -29,8 +31,11 @@ For local `relay_accounts.balance`, the wallet MUST apply each log type as follo
 - `TaskRefund` (`type=5`): increase balance (`+amount`)
 - `Withdraw` (`type=6`): ignore in log sync
 - `WithdrawRefund` (`type=7`): ignore in log sync
+- `UserDelegation` (`type=8`): increase balance (`+amount`)
+- `VestingCreated` (`type=9`): no balance change, create/update local vesting schedule
+- `VestingRelease` (`type=10`): increase balance (`+amount`) only after local schedule validation
 
-Under current implementation behavior, any type other than `TaskPayment`, `Withdraw`, and `WithdrawRefund` SHALL be merged as a positive delta.
+Wallet MUST use an explicit event-type allowlist. Unknown event types MUST fail validation, halt sync, and trigger alert.
 
 ## Validation Rules Before Balance Apply
 
@@ -43,11 +48,21 @@ For each fetched batch, the wallet MUST validate:
   - transaction receiver equals configured relay deposit address
   - transaction sender equals log `address`
   - transaction value equals log `amount`
-- Per-log max amount threshold MUST be enforced for all types except `Deposit`.
+- Per-log max amount threshold MUST be enforced for all balance-applied types except `Deposit` and `VestingRelease`.
 - Per-address log count threshold MUST be enforced using only non-ignored logs.
 - New-address count threshold MUST be enforced using only non-ignored logs.
+- For `VestingCreated`, payload MUST include signed vesting schedule fields and signature.
+- For `VestingCreated`, wallet MUST recover signer from payload signature and MUST match configured vesting signer address.
+- For `VestingRelease`, payload MUST include `vesting_id`.
+- For `VestingRelease`, wallet MUST require an existing local vesting record created from an earlier accepted `VestingCreated` event.
+- For `VestingRelease`, wallet MUST verify:
+  - event `address` equals local vesting record address
+  - `release_to = local released_amount + amount`
+  - cap (`release_to <= local total_amount`)
+  - schedule bound (`release_to <= should_released(created_at)` from local schedule fields).
 
 If a batch contains only ignored log types (`Withdraw` and `WithdrawRefund`), validation SHALL pass and balance merge result SHALL be empty.
+`VestingCreated` is also balance-ignored.
 
 ## Checkpoint Progress Rules
 
