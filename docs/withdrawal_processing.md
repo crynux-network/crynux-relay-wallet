@@ -83,4 +83,3 @@ Local account balance adjustment for withdrawals SHALL remain owned by withdrawa
 
 - Balance is decreased only after confirmed chain transfer.
 - Withdrawal-related Relay account logs (`Withdraw`, `WithdrawRefund`) are not used to adjust local balance in log sync.
-

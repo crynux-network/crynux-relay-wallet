@@ -22,6 +22,9 @@ const (
 	TaskFeeLogTypeTaskRefund          TaskFeeLogType = 5
 	TaskFeeLogTypeWithdraw            TaskFeeLogType = 6
 	TaskFeeLogTypeWithdrawRefund      TaskFeeLogType = 7
+	TaskFeeLogTypeUserDelegation      TaskFeeLogType = 8
+	TaskFeeLogTypeVestingCreated      TaskFeeLogType = 9
+	TaskFeeLogTypeVestingRelease      TaskFeeLogType = 10
 )
 
 type TaskFeeLog struct {
