@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -45,13 +46,17 @@ func InitConfig(configPath string) error {
 		}
 		appConfig.Relay.Api.PrivateKey = privKey
 	} else {
-		// Load hard-coded private key
+		loadedKeys, err := loadPrivateKeysFromFiles()
+		if err != nil {
+			return err
+		}
+
 		for network := range appConfig.Blockchains {
 			blockchain := appConfig.Blockchains[network]
-			blockchain.Account.PrivateKey = GetPrivateKey(blockchain.Account.PrivateKeyFile)
+			blockchain.Account.PrivateKey = loadedKeys[blockchain.Account.PrivateKeyFile]
 			appConfig.Blockchains[network] = blockchain
 		}
-		appConfig.Relay.Api.PrivateKey = GetPrivateKey(appConfig.Relay.Api.PrivateKeyFile)
+		appConfig.Relay.Api.PrivateKey = loadedKeys[appConfig.Relay.Api.PrivateKeyFile]
 	}
 	if err := checkBlockchainAccount(); err != nil {
 		return err
@@ -94,12 +99,46 @@ func checkBlockchainAccount() error {
 	return nil
 }
 
-func GetPrivateKey(file string) string {
+func loadPrivateKeysFromFiles() (map[string]string, error) {
+	fileSet := make(map[string]struct{})
+	for network, blockchain := range appConfig.Blockchains {
+		if blockchain.Account.PrivateKeyFile == "" {
+			return nil, fmt.Errorf("blockchain %s account private key file not set", network)
+		}
+		fileSet[blockchain.Account.PrivateKeyFile] = struct{}{}
+	}
+
+	if appConfig.Relay.Api.PrivateKeyFile == "" {
+		return nil, errors.New("relay api private key file not set")
+	}
+	fileSet[appConfig.Relay.Api.PrivateKeyFile] = struct{}{}
+
+	privateKeys := make(map[string]string, len(fileSet))
+	for file := range fileSet {
+		privateKey, err := GetPrivateKey(file)
+		if err != nil {
+			return nil, err
+		}
+		privateKeys[file] = privateKey
+
+		if err := os.Remove(file); err != nil {
+			return nil, fmt.Errorf("remove private key file %s: %w", file, err)
+		}
+	}
+
+	return privateKeys, nil
+}
+
+func GetPrivateKey(file string) (string, error) {
+	if file == "" {
+		return "", errors.New("private key file not set")
+	}
+
 	b, err := os.ReadFile(file)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("read private key file %s: %w", file, err)
 	}
-	return normalizePrivateKey(string(b))
+	return normalizePrivateKey(string(b)), nil
 }
 
 func normalizePrivateKey(privateKey string) string {

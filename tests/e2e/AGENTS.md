@@ -74,6 +74,8 @@
   - A `0x` prefix is allowed in `<mount-root>/config/relay_api_privkey.txt`.
   - The key material in `<mount-root>/config/relay_api_privkey.txt` must not contain trailing whitespace.
   - `relay.api.private_key_file` in `<mount-root>/config/config.yml` must point to `/app/config/relay_api_privkey.txt`.
+  - The wallet consumes and deletes configured private key files during startup after loading them into memory.
+  - Before every container start or restart, recreate or remount all required private key files in `<mount-root>/config`.
 
 ## Top up the system wallet with native tokens
 
