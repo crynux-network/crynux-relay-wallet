@@ -6,6 +6,7 @@ import (
 	"crynux_relay_wallet/blockchain/bindings"
 	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/models"
+	"database/sql"
 	"errors"
 	"math/big"
 	"regexp"
@@ -21,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
@@ -28,6 +30,7 @@ import (
 
 type BlockchainClient struct {
 	Network                        string
+	RpcEndpoint                    string
 	RpcClient                      *ethclient.Client
 	BenefitAddressContractInstance *bindings.BenefitAddress
 	ChainID                        *big.Int
@@ -45,6 +48,23 @@ var blockchainClients = make(map[string]*BlockchainClient)
 var pattern *regexp.Regexp = regexp.MustCompile(`[Nn]once`)
 
 var ErrBlockchainNotFound = errors.New("blockchain not found")
+
+type TransactionTransfer struct {
+	Hash  common.Hash
+	From  common.Address
+	To    *common.Address
+	Value *big.Int
+	Input []byte
+}
+
+type rawTransactionTransfer struct {
+	Hash  string `json:"hash"`
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Value string `json:"value"`
+	Input string `json:"input"`
+	Data  string `json:"data"`
+}
 
 func GetBlockchainClient(network string) (*BlockchainClient, error) {
 	client, exists := blockchainClients[network]
@@ -90,6 +110,7 @@ func initBlockchainClient(ctx context.Context, network string) error {
 
 	blockchainClients[network] = &BlockchainClient{
 		Network:                        network,
+		RpcEndpoint:                    blockchain.RpcEndpoint,
 		RpcClient:                      client,
 		BenefitAddressContractInstance: benefitAddressInstance,
 		ChainID:                        chainID,
@@ -277,6 +298,65 @@ func (client *BlockchainClient) SendETH(ctx context.Context, to common.Address, 
 	return signedTx, nil
 }
 
+func parseTransactionInput(input string, data string) ([]byte, error) {
+	if input == "" {
+		input = data
+	}
+	if input == "" {
+		return nil, errors.New("transaction input field is empty")
+	}
+	return hexutil.Decode(input)
+}
+
+func parseRawTransactionTransfer(raw *rawTransactionTransfer, expectedHash common.Hash) (*TransactionTransfer, error) {
+	if raw == nil {
+		return nil, ethereum.NotFound
+	}
+	hash := common.HexToHash(raw.Hash)
+	if raw.Hash == "" || hash != expectedHash {
+		return nil, errors.New("transaction hash mismatch")
+	}
+	if !common.IsHexAddress(raw.From) {
+		return nil, errors.New("transaction from address is invalid")
+	}
+	if !common.IsHexAddress(raw.To) {
+		return nil, errors.New("transaction to address is invalid")
+	}
+	value, err := hexutil.DecodeBig(raw.Value)
+	if err != nil {
+		return nil, err
+	}
+	input, err := parseTransactionInput(raw.Input, raw.Data)
+	if err != nil {
+		return nil, err
+	}
+	to := common.HexToAddress(raw.To)
+	return &TransactionTransfer{
+		Hash:  hash,
+		From:  common.HexToAddress(raw.From),
+		To:    &to,
+		Value: value,
+		Input: input,
+	}, nil
+}
+
+func (client *BlockchainClient) GetTransactionTransfer(ctx context.Context, txHash common.Hash) (*TransactionTransfer, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	rpcClient, err := rpc.DialContext(callCtx, client.RpcEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer rpcClient.Close()
+
+	var raw *rawTransactionTransfer
+	if err := rpcClient.CallContext(callCtx, &raw, "eth_getTransactionByHash", txHash); err != nil {
+		return nil, err
+	}
+	return parseRawTransactionTransfer(raw, txHash)
+}
+
 // QueueSendETH queues a send ETH transaction to be sent later
 func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
 	appConfig := config.GetConfig()
@@ -302,21 +382,41 @@ func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *b
 	return transaction, nil
 }
 
-func (client *BlockchainClient) GetErrorMessageFromReceipt(ctx context.Context, receipt *types.Receipt) (string, error) {
-	ctx1, cancel1 := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel1()
-	tx, _, err := client.RpcClient.TransactionByHash(ctx1, receipt.TxHash)
+func parseTransactionData(data sql.NullString) ([]byte, error) {
+	if !data.Valid || data.String == "" {
+		return nil, nil
+	}
+	return hexutil.Decode(data.String)
+}
+
+func BuildCallMsgFromTransaction(transaction *models.BlockchainTransaction) (ethereum.CallMsg, error) {
+	value, ok := new(big.Int).SetString(transaction.Value, 10)
+	if !ok {
+		return ethereum.CallMsg{}, errors.New("transaction value is invalid")
+	}
+	data, err := parseTransactionData(transaction.Data)
+	if err != nil {
+		return ethereum.CallMsg{}, err
+	}
+	if !common.IsHexAddress(transaction.FromAddress) {
+		return ethereum.CallMsg{}, errors.New("transaction from address is invalid")
+	}
+	if !common.IsHexAddress(transaction.ToAddress) {
+		return ethereum.CallMsg{}, errors.New("transaction to address is invalid")
+	}
+	to := common.HexToAddress(transaction.ToAddress)
+	return ethereum.CallMsg{
+		From:  common.HexToAddress(transaction.FromAddress),
+		To:    &to,
+		Value: value,
+		Data:  data,
+	}, nil
+}
+
+func (client *BlockchainClient) GetErrorMessageFromTransaction(ctx context.Context, transaction *models.BlockchainTransaction, receipt *types.Receipt) (string, error) {
+	msg, err := BuildCallMsgFromTransaction(transaction)
 	if err != nil {
 		return "", err
-	}
-
-	msg := ethereum.CallMsg{
-		From:     common.HexToAddress(client.Address),
-		To:       tx.To(),
-		Gas:      tx.Gas(),
-		GasPrice: tx.GasPrice(),
-		Value:    tx.Value(),
-		Data:     tx.Data(),
 	}
 
 	blockNumber := big.NewInt(0).Sub(receipt.BlockNumber, big.NewInt(1))

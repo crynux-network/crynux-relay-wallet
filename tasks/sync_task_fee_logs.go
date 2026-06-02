@@ -212,34 +212,32 @@ func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) erro
 		return ErrTaskFeeDepositTxMismatch
 	}
 
-	tx, _, err := client.RpcClient.TransactionByHash(ctx, txHash)
+	transfer, err := client.GetTransactionTransfer(ctx, txHash)
 	if errors.Is(err, ethereum.NotFound) {
 		return fmt.Errorf("deposit transaction not found: %s", payload.TxHash)
 	}
 	if err != nil {
 		return err
 	}
-	if tx.To() == nil || !strings.EqualFold(tx.To().Hex(), config.GetConfig().Relay.DepositAddress) {
+	if transfer.To == nil || !strings.EqualFold(transfer.To.Hex(), config.GetConfig().Relay.DepositAddress) {
 		return ErrTaskFeeDepositTxMismatch
 	}
-
-	from, err := types.Sender(types.LatestSignerForChainID(client.ChainID), tx)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(from.Hex(), eventLog.Address) || tx.Value().Cmp(amount) != 0 {
+	if !strings.EqualFold(transfer.From.Hex(), eventLog.Address) ||
+		transfer.Value == nil ||
+		transfer.Value.Cmp(amount) != 0 ||
+		len(transfer.Input) != 0 {
 		return ErrTaskFeeDepositTxMismatch
 	}
 
 	if receipt.BlockNumber == nil {
 		return ErrTaskFeeDepositTxMismatch
 	}
-	block, err := client.RpcClient.BlockByNumber(ctx, receipt.BlockNumber)
+	header, err := client.RpcClient.HeaderByNumber(ctx, receipt.BlockNumber)
 	if err != nil {
 		return err
 	}
 	maxAgeSeconds := config.GetConfig().Tasks.SyncTaskFeeLogs.DepositMaxAgeSeconds
-	if block.Time()+maxAgeSeconds < uint64(time.Now().Unix()) {
+	if header.Time+maxAgeSeconds < uint64(time.Now().Unix()) {
 		return ErrTaskFeeDepositTxTooOld
 	}
 
