@@ -44,6 +44,19 @@ var ErrWithdrawalRequestTaskFeeNotEnough = NewWithdrawalRequestError("withdrawal
 var ErrWithdrawalRequestBalanceNotEnough = NewWithdrawalRequestError("withdrawal request balance not enough")
 var ErrWithdrawalRequestBeneficialAddressInvalid = NewWithdrawalRequestError("withdrawal request beneficial address is invalid")
 var ErrWithdrawalRequestAmountTooSmall = NewWithdrawalRequestError("withdrawal request amount is too small")
+var ErrWithdrawalRequestTransactionUnconfirmedTimeout = NewWithdrawalRequestError("withdrawal request transaction remains unconfirmed after timeout")
+
+func parseWithdrawalAmount(amountText string) (*big.Int, error) {
+	amount, ok := big.NewInt(0).SetString(amountText, 10)
+	if !ok || amount.Sign() < 0 {
+		return nil, ErrWithdrawalRequestAmountInvalid
+	}
+	return amount, nil
+}
+
+func withdrawalTotalAmount(amount, withdrawalFee *big.Int) *big.Int {
+	return big.NewInt(0).Add(amount, withdrawalFee)
+}
 
 func StartSyncWithdrawalRequests(ctx context.Context) error {
 	intervalSeconds := config.GetConfig().Tasks.SyncWithdrawalRequests.IntervalSeconds
@@ -95,12 +108,19 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 	appConfig := config.GetConfig()
 	minWithdrawalAmount := utils.EtherToWei(big.NewInt(0).SetUint64(appConfig.Tasks.SyncWithdrawalRequests.MinWithdrawalAmount))
 	for _, request := range requests {
-		amount, ok := big.NewInt(0).SetString(request.Amount, 10)
-		if !ok {
-			return ErrWithdrawalRequestAmountInvalid
+		amount, err := parseWithdrawalAmount(request.Amount)
+		if err != nil {
+			return err
+		}
+		withdrawalFee, err := parseWithdrawalAmount(request.WithdrawalFee)
+		if err != nil {
+			return err
 		}
 		if amount.Cmp(minWithdrawalAmount) < 0 {
 			return ErrWithdrawalRequestAmountTooSmall
+		}
+		if withdrawalTotalAmount(amount, withdrawalFee).Sign() <= 0 {
+			return ErrWithdrawalRequestAmountInvalid
 		}
 	}
 
@@ -110,14 +130,19 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 		if request.Status != relay_api.WithdrawStatusPending {
 			return ErrWithdrawalRequestStatusInvalid
 		}
-		amount, ok := big.NewInt(0).SetString(request.Amount, 10)
-		if !ok {
-			return ErrWithdrawalRequestAmountInvalid
+		amount, err := parseWithdrawalAmount(request.Amount)
+		if err != nil {
+			return err
 		}
+		withdrawalFee, err := parseWithdrawalAmount(request.WithdrawalFee)
+		if err != nil {
+			return err
+		}
+		totalAmount := withdrawalTotalAmount(amount, withdrawalFee)
 		if _, ok := amountMap[request.Address]; ok {
-			amountMap[request.Address].Add(amountMap[request.Address], amount)
+			amountMap[request.Address].Add(amountMap[request.Address], totalAmount)
 		} else {
-			amountMap[request.Address] = big.NewInt(0).Set(amount)
+			amountMap[request.Address] = big.NewInt(0).Set(totalAmount)
 		}
 		if _, ok := networkAmountMap[request.Network]; ok {
 			networkAmountMap[request.Network].Add(networkAmountMap[request.Network], amount)
@@ -219,15 +244,20 @@ func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 
 		var records []*models.WithdrawRecord
 		for _, request := range requests {
-			amount, ok := big.NewInt(0).SetString(request.Amount, 10)
-			if !ok {
-				return ErrWithdrawalRequestAmountInvalid
+			amount, err := parseWithdrawalAmount(request.Amount)
+			if err != nil {
+				return err
+			}
+			withdrawalFee, err := parseWithdrawalAmount(request.WithdrawalFee)
+			if err != nil {
+				return err
 			}
 			records = append(records, &models.WithdrawRecord{
 				RemoteID:       request.ID,
 				Address:        request.Address,
 				BenefitAddress: request.BenefitAddress,
 				Amount:         models.BigInt{Int: *amount},
+				WithdrawalFee:  models.BigInt{Int: *withdrawalFee},
 				Network:        request.Network,
 				Status:         models.WithdrawStatusPending,
 			})
@@ -311,15 +341,16 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 
 		if blockchainTransaction.Status == models.TransactionStatusConfirmed {
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
+				totalAmount := withdrawalTotalAmount(&record.Amount.Int, &record.WithdrawalFee.Int)
 				var account models.RelayAccount
 				err = tx.Model(&models.RelayAccount{}).Where("address = ?", record.Address).First(&account).Error
 				if err != nil {
 					return err
 				}
-				if account.Balance.Cmp(&record.Amount.Int) < 0 {
+				if account.Balance.Cmp(totalAmount) < 0 {
 					return ErrWithdrawalRequestTaskFeeNotEnough
 				}
-				account.Balance.Sub(&account.Balance.Int, &record.Amount.Int)
+				account.Balance.Sub(&account.Balance.Int, totalAmount)
 				err = tx.Save(&account).Error
 				if err != nil {
 					return err
@@ -376,83 +407,82 @@ func rejectTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *mo
 	return nil
 }
 
-func processWithdrawalRecords(ctx context.Context) error {
-	innerCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	errCh := make(chan error)
-
-	go func(ctx context.Context, errCh chan<- error) {
-		appConfig := config.GetConfig()
-		db := config.GetDB()
-
-		var startID uint
-		limit := appConfig.Tasks.ProcessWithdrawalRequests.BatchSize
-
-		for {
-			records, err := getUnfinishedWithdrawalRecords(ctx, db, startID, int(limit))
-			if err != nil {
-				select {
-				case errCh <- err:
-				case <-ctx.Done():
-				}
-				return
-			}
-
-			if len(records) > 0 {
-				startID = records[len(records)-1].ID
-				for _, record := range records {
-					go func(ctx context.Context, record *models.WithdrawRecord) {
-						deadline := record.CreatedAt.Add(time.Duration(config.GetConfig().Tasks.ProcessWithdrawalRequests.Timeout) * time.Second)
-						ctx, cancel := context.WithDeadline(ctx, deadline)
-						defer cancel()
-
-						for {
-							log.Infof("ProcessWithdrawalRecords: process withdrawal record %d", record.ID)
-							c := make(chan error)
-							go func() {
-								c <- processWithdrawalRecord(ctx, db, record)
-							}()
-
-							select {
-							case <-ctx.Done():
-								err = ctx.Err()
-								if err == context.DeadlineExceeded {
-									if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
-										errCh <- fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
-										return
-									}
-									errCh <- fmt.Errorf("process withdrawal request timeout: %d", record.ID)
-								} else {
-									return
-								}
-							case err := <-c:
-								if err != nil {
-									log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)
-									if IsWithdrawalRequestError(err) {
-										select {
-										case errCh <- err:
-										case <-ctx.Done():
-										}
-										return
-									}
-									time.Sleep(5 * time.Second)
-								} else {
-									log.Infof("ProcessWithdrawalRecords: process withdrawal record %d successfully", record.ID)
-									return
-								}
-							}
-						}
-					}(ctx, record)
-				}
-			}
-			time.Sleep(time.Duration(appConfig.Tasks.ProcessWithdrawalRequests.IntervalSeconds) * time.Second)
-		}
-	}(innerCtx, errCh)
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-errCh:
+func handleTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) error {
+	if err := db.WithContext(ctx).First(record, record.ID).Error; err != nil {
 		return err
+	}
+	if record.BlockchainTransactionID.Valid {
+		log.Errorf("ProcessWithdrawalRecords: withdrawal record %d has unconfirmed blockchain transaction %d after timeout", record.ID, record.BlockchainTransactionID.Int64)
+		return ErrWithdrawalRequestTransactionUnconfirmedTimeout
+	}
+	if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
+		return fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
+	}
+	log.Infof("ProcessWithdrawalRecords: rejected timeout withdrawal record %d before blockchain transaction creation", record.ID)
+	return nil
+}
+
+func processWithdrawalRecordWithRetry(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) error {
+	deadline := record.CreatedAt.Add(time.Duration(config.GetConfig().Tasks.ProcessWithdrawalRequests.Timeout) * time.Second)
+
+	for {
+		if time.Now().After(deadline) {
+			return handleTimeoutWithdrawalRequest(ctx, db, record)
+		}
+
+		recordCtx, cancel := context.WithDeadline(ctx, deadline)
+		log.Infof("ProcessWithdrawalRecords: process withdrawal record %d", record.ID)
+		err := processWithdrawalRecord(recordCtx, db, record)
+		cancel()
+
+		if err == nil {
+			log.Infof("ProcessWithdrawalRecords: process withdrawal record %d successfully", record.ID)
+			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return handleTimeoutWithdrawalRequest(ctx, db, record)
+		}
+		log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)
+		if IsWithdrawalRequestError(err) {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func processWithdrawalRecords(ctx context.Context) error {
+	appConfig := config.GetConfig()
+	db := config.GetDB()
+
+	var startID uint
+	limit := appConfig.Tasks.ProcessWithdrawalRequests.BatchSize
+	interval := time.Duration(appConfig.Tasks.ProcessWithdrawalRequests.IntervalSeconds) * time.Second
+
+	for {
+		records, err := getUnfinishedWithdrawalRecords(ctx, db, startID, int(limit))
+		if err != nil {
+			return err
+		}
+
+		if len(records) == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(interval):
+				continue
+			}
+		}
+
+		for _, record := range records {
+			if err := processWithdrawalRecordWithRetry(ctx, db, record); err != nil {
+				return err
+			}
+			startID = record.ID
+		}
 	}
 }

@@ -4,6 +4,8 @@
 
 This document defines the end-to-end withdrawal handling flow in Relay Wallet, including request synchronization, validation, local persistence, blockchain execution, callback reporting, and timeout behavior.
 
+Withdrawal fee amount source, fee receiver configuration, fee-income log validation, and payout/debit invariants are specified in [withdrawal_fee_processing.md](./withdrawal_fee_processing.md). Implementations MUST follow that specification.
+
 ## Entry Tasks
 
 The wallet SHALL run two long-lived tasks for withdrawals:
@@ -48,16 +50,24 @@ The wallet stores each accepted request as `withdraw_records` with local status 
 `success` and `failed` represent local execution outcome before relay callback completion.
 `finished` represents callback completion (`fulfill` or `reject`) and local finalization.
 
+Each local withdrawal record MUST store the withdrawal fee reported by Relay. All wallet-side balance validation and debit rules MUST use `amount + withdrawal_fee`, because Relay charges the requester relay account by that same total amount when creating the `Withdraw` ledger event.
+
 ## Execution Flow (`processWithdrawalRecord`)
 
-For each unfinished local record:
+Withdrawal record processing MUST be serial. `StartProcessWithdrawalRequests` SHALL process at most one unfinished withdrawal record at a time, and it SHALL NOT start processing the next withdrawal record until the current record reaches `finished`.
+
+This serialization boundary is the withdrawal record processor. It does not require the lower-level blockchain transaction manager to become a global serial sender. The transaction manager may keep its existing queue and confirmation behavior, but only one withdrawal record may be actively driven by `processWithdrawalRecord` at a time.
+
+Serial withdrawal processing solves the wallet-local balance race where multiple withdrawal records can queue chain transfers before any one of them performs the final local balance debit. Because withdrawals are processed one record at a time, a confirmed withdrawal updates local balance before the next withdrawal can queue or monitor its transfer. This preserves the existing simple balance model without adding a separate reserved-balance state.
+
+For the active unfinished local record:
 
 1. If no blockchain transaction is attached, queue send transaction (`QueueSendETH`) and store `blockchain_transaction_id`.
 2. Poll transaction status until terminal (`confirmed` or `failed`) or context cancellation.
 3. If confirmed:
    - Load local relay account by record address.
-   - Verify local balance is sufficient for record amount.
-   - Decrease local balance by record amount.
+   - Verify local balance is sufficient for `amount + withdrawal_fee`.
+   - Decrease local balance by `amount + withdrawal_fee`.
    - Update record status to `success` in the same transaction.
 4. If failed and retries are exhausted, update record status to `failed`.
 5. After leaving pending loop:
@@ -82,4 +92,5 @@ If deadline is exceeded:
 Local account balance adjustment for withdrawals SHALL remain owned by withdrawal execution flow:
 
 - Balance is decreased only after confirmed chain transfer.
+- The decreased amount MUST be `amount + withdrawal_fee`.
 - Withdrawal-related Relay account logs (`Withdraw`, `WithdrawRefund`) are not used to adjust local balance in log sync.

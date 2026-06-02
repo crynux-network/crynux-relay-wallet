@@ -74,6 +74,59 @@ func TestMergeTaskFeeLogsHandlesUserDelegation(t *testing.T) {
 	}
 }
 
+func TestCheckTaskFeeLogsValidatesWithdrawalFeeAddress(t *testing.T) {
+	feeAddress := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	otherAddress := common.HexToAddress("0x3333333333333333333333333333333333333333")
+
+	configDir := t.TempDir()
+	configContent := fmt.Sprintf(`
+environment: test
+relay:
+  withdrawal_fee_address: %s
+tasks:
+  sync_task_fee_logs:
+    max_task_fee_amount: 100
+    max_address_logs_count_in_batch: 10
+    max_new_address_count_in_batch: 10
+`, feeAddress.Hex())
+	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := config.InitConfig(configDir); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.RelayAccount{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	err = checkTaskFeeLogs(context.Background(), db, []relay_api.TaskFeeLog{
+		{
+			Address: feeAddress.Hex(),
+			Amount:  "1",
+			Type:    relay_api.TaskFeeLogTypeWithdrawalFeeIncome,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected matching withdrawal fee address to pass, got %v", err)
+	}
+
+	err = checkTaskFeeLogs(context.Background(), db, []relay_api.TaskFeeLog{
+		{
+			Address: otherAddress.Hex(),
+			Amount:  "1",
+			Type:    relay_api.TaskFeeLogTypeWithdrawalFeeIncome,
+		},
+	})
+	if !errors.Is(err, ErrTaskFeeWithdrawalFeeAddressMismatch) {
+		t.Fatalf("expected ErrTaskFeeWithdrawalFeeAddressMismatch, got %v", err)
+	}
+}
+
 func TestParseVestingReleasePayloadOnlyRequiresVestingID(t *testing.T) {
 	payload, err := parseVestingReleasePayload(relay_api.TaskFeeLog{
 		Payload: `{"vesting_id":42}`,

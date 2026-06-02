@@ -26,6 +26,7 @@ Deposit-specific validation, deduplication, and fail-fast rules are specified in
 ### Withdrawal Request Processing
 
 Withdrawal handling uses a two-stage pipeline: `tasks.StartSyncWithdrawalRequests` pulls and stores gated requests from Relay, and `tasks.StartProcessWithdrawalRequests` executes on-chain transfers and reports fulfill or reject back to Relay.
+Withdrawal execution is serial at the local withdrawal-record level: the wallet processes one unfinished withdrawal record through chain execution, Relay callback, and local finalization before starting the next record. This keeps the wallet's local balance model simple while preventing concurrent withdrawal records from spending the same local balance before a confirmed transfer debit is recorded.
 Detailed withdrawal request synchronization, validation, execution, callback, timeout handling, and balance ownership rules are specified in [withdrawal_processing.md](./withdrawal_processing.md). Implementations MUST follow that specification.
 
 ### Other Components

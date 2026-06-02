@@ -58,6 +58,7 @@ type AppConfig struct {
 			PrivateKeyFile string `mapstructure:"private_key_file"`
 		} `mapstructure:"api"`
 		DepositAddress       string `mapstructure:"deposit_address"`
+		WithdrawalFeeAddress string `mapstructure:"withdrawal_fee_address"`
 		VestingSignerAddress string `mapstructure:"vesting_signer_address"`
 	} `mapstructure:"relay"`
 

@@ -55,6 +55,7 @@ var ErrTaskFeeVestingSignerMismatch = NewTaskFeeError("vesting signer does not m
 var ErrTaskFeeVestingSignatureInvalid = NewTaskFeeError("vesting signature is invalid")
 var ErrTaskFeeVestingRecordNotFound = NewTaskFeeError("vesting record not found")
 var ErrTaskFeeVestingReleaseInvalid = NewTaskFeeError("vesting release is invalid")
+var ErrTaskFeeWithdrawalFeeAddressMismatch = NewTaskFeeError("withdrawal fee income address does not match configured address")
 
 type depositPayload struct {
 	TxHash  string `json:"tx_hash"`
@@ -488,6 +489,10 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 		if eventLog.Type == relay_api.TaskFeeLogTypeDeposit {
 			if err := validateDepositLog(ctx, eventLog); err != nil {
 				return err
+			}
+		} else if eventLog.Type == relay_api.TaskFeeLogTypeWithdrawalFeeIncome {
+			if !strings.EqualFold(eventLog.Address, appConfig.Relay.WithdrawalFeeAddress) {
+				return ErrTaskFeeWithdrawalFeeAddressMismatch
 			}
 		} else if eventLog.Type == relay_api.TaskFeeLogTypeVestingCreated {
 			if amount.Sign() != 0 {
