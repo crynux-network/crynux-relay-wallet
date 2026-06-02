@@ -55,6 +55,7 @@ var ErrTaskFeeVestingSignerMismatch = NewTaskFeeError("vesting signer does not m
 var ErrTaskFeeVestingSignatureInvalid = NewTaskFeeError("vesting signature is invalid")
 var ErrTaskFeeVestingRecordNotFound = NewTaskFeeError("vesting record not found")
 var ErrTaskFeeVestingReleaseInvalid = NewTaskFeeError("vesting release is invalid")
+var ErrTaskFeeWithdrawalFeeAddressMismatch = NewTaskFeeError("withdrawal fee income address does not match configured address")
 
 type depositPayload struct {
 	TxHash  string `json:"tx_hash"`
@@ -212,34 +213,32 @@ func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) erro
 		return ErrTaskFeeDepositTxMismatch
 	}
 
-	tx, _, err := client.RpcClient.TransactionByHash(ctx, txHash)
+	transfer, err := client.GetTransactionTransfer(ctx, txHash)
 	if errors.Is(err, ethereum.NotFound) {
 		return fmt.Errorf("deposit transaction not found: %s", payload.TxHash)
 	}
 	if err != nil {
 		return err
 	}
-	if tx.To() == nil || !strings.EqualFold(tx.To().Hex(), config.GetConfig().Relay.DepositAddress) {
+	if transfer.To == nil || !strings.EqualFold(transfer.To.Hex(), config.GetConfig().Relay.DepositAddress) {
 		return ErrTaskFeeDepositTxMismatch
 	}
-
-	from, err := types.Sender(types.LatestSignerForChainID(client.ChainID), tx)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(from.Hex(), eventLog.Address) || tx.Value().Cmp(amount) != 0 {
+	if !strings.EqualFold(transfer.From.Hex(), eventLog.Address) ||
+		transfer.Value == nil ||
+		transfer.Value.Cmp(amount) != 0 ||
+		len(transfer.Input) != 0 {
 		return ErrTaskFeeDepositTxMismatch
 	}
 
 	if receipt.BlockNumber == nil {
 		return ErrTaskFeeDepositTxMismatch
 	}
-	block, err := client.RpcClient.BlockByNumber(ctx, receipt.BlockNumber)
+	header, err := client.RpcClient.HeaderByNumber(ctx, receipt.BlockNumber)
 	if err != nil {
 		return err
 	}
 	maxAgeSeconds := config.GetConfig().Tasks.SyncTaskFeeLogs.DepositMaxAgeSeconds
-	if block.Time()+maxAgeSeconds < uint64(time.Now().Unix()) {
+	if header.Time+maxAgeSeconds < uint64(time.Now().Unix()) {
 		return ErrTaskFeeDepositTxTooOld
 	}
 
@@ -490,6 +489,10 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 		if eventLog.Type == relay_api.TaskFeeLogTypeDeposit {
 			if err := validateDepositLog(ctx, eventLog); err != nil {
 				return err
+			}
+		} else if eventLog.Type == relay_api.TaskFeeLogTypeWithdrawalFeeIncome {
+			if !strings.EqualFold(eventLog.Address, appConfig.Relay.WithdrawalFeeAddress) {
+				return ErrTaskFeeWithdrawalFeeAddressMismatch
 			}
 		} else if eventLog.Type == relay_api.TaskFeeLogTypeVestingCreated {
 			if amount.Sign() != 0 {

@@ -1,9 +1,27 @@
 package tasks
 
 import (
+	"context"
+	"crynux_relay_wallet/blockchain"
+	"crynux_relay_wallet/config"
+	"crynux_relay_wallet/models"
 	"crynux_relay_wallet/relay_api"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestMergeTaskFeeLogsRejectsUnknownEventType(t *testing.T) {
@@ -56,6 +74,59 @@ func TestMergeTaskFeeLogsHandlesUserDelegation(t *testing.T) {
 	}
 }
 
+func TestCheckTaskFeeLogsValidatesWithdrawalFeeAddress(t *testing.T) {
+	feeAddress := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	otherAddress := common.HexToAddress("0x3333333333333333333333333333333333333333")
+
+	configDir := t.TempDir()
+	configContent := fmt.Sprintf(`
+environment: test
+relay:
+  withdrawal_fee_address: %s
+tasks:
+  sync_task_fee_logs:
+    max_task_fee_amount: 100
+    max_address_logs_count_in_batch: 10
+    max_new_address_count_in_batch: 10
+`, feeAddress.Hex())
+	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := config.InitConfig(configDir); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.RelayAccount{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	err = checkTaskFeeLogs(context.Background(), db, []relay_api.TaskFeeLog{
+		{
+			Address: feeAddress.Hex(),
+			Amount:  "1",
+			Type:    relay_api.TaskFeeLogTypeWithdrawalFeeIncome,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected matching withdrawal fee address to pass, got %v", err)
+	}
+
+	err = checkTaskFeeLogs(context.Background(), db, []relay_api.TaskFeeLog{
+		{
+			Address: otherAddress.Hex(),
+			Amount:  "1",
+			Type:    relay_api.TaskFeeLogTypeWithdrawalFeeIncome,
+		},
+	})
+	if !errors.Is(err, ErrTaskFeeWithdrawalFeeAddressMismatch) {
+		t.Fatalf("expected ErrTaskFeeWithdrawalFeeAddressMismatch, got %v", err)
+	}
+}
+
 func TestParseVestingReleasePayloadOnlyRequiresVestingID(t *testing.T) {
 	payload, err := parseVestingReleasePayload(relay_api.TaskFeeLog{
 		Payload: `{"vesting_id":42}`,
@@ -74,5 +145,349 @@ func TestParseVestingReleasePayloadRejectsMissingVestingID(t *testing.T) {
 	})
 	if !errors.Is(err, ErrTaskFeeVestingPayloadInvalid) {
 		t.Fatalf("expected ErrTaskFeeVestingPayloadInvalid, got %v", err)
+	}
+}
+
+type depositRPCState struct {
+	txHash        common.Hash
+	from          common.Address
+	to            common.Address
+	value         *big.Int
+	input         string
+	receiptStatus string
+	blockNumber   uint64
+	blockTime     uint64
+}
+
+func zeroBloomHex() string {
+	return "0x" + strings.Repeat("0", 512)
+}
+
+func newDepositRPCServer(t *testing.T, state depositRPCState) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+			ID     json.RawMessage   `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode rpc request: %v", err)
+		}
+
+		result := any(nil)
+		switch request.Method {
+		case "eth_getTransactionCount":
+			result = "0x0"
+		case "eth_getTransactionReceipt":
+			result = map[string]any{
+				"transactionHash":   state.txHash.Hex(),
+				"transactionIndex":  "0x0",
+				"blockHash":         common.HexToHash("0x100").Hex(),
+				"blockNumber":       fmt.Sprintf("0x%x", state.blockNumber),
+				"from":              state.from.Hex(),
+				"to":                state.to.Hex(),
+				"cumulativeGasUsed": "0x5208",
+				"gasUsed":           "0x5208",
+				"effectiveGasPrice": "0x1",
+				"contractAddress":   nil,
+				"logs":              []any{},
+				"logsBloom":         zeroBloomHex(),
+				"status":            state.receiptStatus,
+				"type":              "0x0",
+			}
+		case "eth_getTransactionByHash":
+			result = map[string]any{
+				"type":  "0x7e",
+				"hash":  state.txHash.Hex(),
+				"from":  state.from.Hex(),
+				"to":    state.to.Hex(),
+				"value": "0x" + state.value.Text(16),
+				"input": state.input,
+			}
+		case "eth_getBlockByNumber":
+			result = map[string]any{
+				"parentHash":       common.HexToHash("0x1").Hex(),
+				"sha3Uncles":       common.HexToHash("0x2").Hex(),
+				"miner":            common.HexToAddress("0x3333333333333333333333333333333333333333").Hex(),
+				"stateRoot":        common.HexToHash("0x3").Hex(),
+				"transactionsRoot": common.HexToHash("0x4").Hex(),
+				"receiptsRoot":     common.HexToHash("0x5").Hex(),
+				"logsBloom":        zeroBloomHex(),
+				"difficulty":       "0x0",
+				"number":           fmt.Sprintf("0x%x", state.blockNumber),
+				"gasLimit":         "0x1c9c380",
+				"gasUsed":          "0x5208",
+				"timestamp":        fmt.Sprintf("0x%x", state.blockTime),
+				"extraData":        "0x",
+				"mixHash":          common.HexToHash("0x6").Hex(),
+				"nonce":            "0x0000000000000000",
+				"baseFeePerGas":    "0x1",
+				"transactions":     []any{},
+				"uncles":           []any{},
+			}
+		default:
+			t.Fatalf("unexpected rpc method %s", request.Method)
+		}
+
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result":  result,
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("encode rpc response: %v", err)
+		}
+	}))
+}
+
+func initDepositValidationConfig(t *testing.T, network string, rpcEndpoint string, depositAddress common.Address) {
+	t.Helper()
+
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	privateKeyFile := filepath.Join(t.TempDir(), "private_key")
+	if err := os.WriteFile(privateKeyFile, []byte(fmt.Sprintf("%x", crypto.FromECDSA(privateKey))), 0600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	accountAddress := crypto.PubkeyToAddress(privateKey.PublicKey)
+
+	configDir := t.TempDir()
+	configContent := fmt.Sprintf(`
+environment: debug
+blockchains:
+  %s:
+    rps: 100
+    rpc_endpoint: %s
+    gas_limit: 21000
+    gas_price: 1
+    chain_id: 42161
+    account:
+      address: %s
+      private_key_file: %s
+    contracts:
+      benefit_address: 0x0000000000000000000000000000000000000000
+    max_retries: 1
+    retry_interval: 1
+    receipt_wait_time: 30
+    sent_transaction_count_limit: 100
+relay:
+  api:
+    private_key_file: %s
+  deposit_address: %s
+tasks:
+  sync_task_fee_logs:
+    deposit_max_age_seconds: 3600
+`, network, rpcEndpoint, accountAddress.Hex(), filepath.ToSlash(privateKeyFile), filepath.ToSlash(privateKeyFile), depositAddress.Hex())
+	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := config.InitConfig(configDir); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := blockchain.Init(context.Background()); err != nil {
+		t.Fatalf("init blockchain: %v", err)
+	}
+}
+
+func validateDepositForState(t *testing.T, state depositRPCState, eventLog relay_api.TaskFeeLog) error {
+	return validateDepositForStateWithDepositAddress(t, state, eventLog, state.to)
+}
+
+func validateDepositForStateWithDepositAddress(t *testing.T, state depositRPCState, eventLog relay_api.TaskFeeLog, depositAddress common.Address) error {
+	t.Helper()
+
+	network := fmt.Sprintf("deposit_test_%d", time.Now().UnixNano())
+	server := newDepositRPCServer(t, state)
+	defer server.Close()
+	initDepositValidationConfig(t, network, server.URL, depositAddress)
+	eventLog.Payload = fmt.Sprintf(`{"tx_hash":"%s","network":"%s"}`, state.txHash.Hex(), network)
+	return validateDepositLog(context.Background(), eventLog)
+}
+
+func TestValidateDepositLogAcceptsRawTransfer(t *testing.T) {
+	txHash := common.HexToHash("0x1234")
+	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
+
+	err := validateDepositForState(t, depositRPCState{
+		txHash:        txHash,
+		from:          from,
+		to:            to,
+		value:         big.NewInt(42),
+		input:         "0x",
+		receiptStatus: "0x1",
+		blockNumber:   16,
+		blockTime:     uint64(time.Now().Unix()),
+	}, relay_api.TaskFeeLog{
+		Address: from.Hex(),
+		Amount:  "42",
+		Type:    relay_api.TaskFeeLogTypeDeposit,
+	})
+	if err != nil {
+		t.Fatalf("validateDepositLog failed: %v", err)
+	}
+}
+
+func TestValidateDepositLogRejectsRawTransferMismatches(t *testing.T) {
+	txHash := common.HexToHash("0x1234")
+	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
+
+	tests := []struct {
+		name    string
+		state   depositRPCState
+		log     relay_api.TaskFeeLog
+		wantErr error
+	}{
+		{
+			name: "wrong to",
+			state: depositRPCState{
+				txHash:        txHash,
+				from:          from,
+				to:            common.HexToAddress("0x3333333333333333333333333333333333333333"),
+				value:         big.NewInt(42),
+				input:         "0x",
+				receiptStatus: "0x1",
+				blockNumber:   16,
+				blockTime:     uint64(time.Now().Unix()),
+			},
+			log:     relay_api.TaskFeeLog{Address: from.Hex(), Amount: "42", Type: relay_api.TaskFeeLogTypeDeposit},
+			wantErr: ErrTaskFeeDepositTxMismatch,
+		},
+		{
+			name: "wrong from",
+			state: depositRPCState{
+				txHash:        txHash,
+				from:          from,
+				to:            to,
+				value:         big.NewInt(42),
+				input:         "0x",
+				receiptStatus: "0x1",
+				blockNumber:   16,
+				blockTime:     uint64(time.Now().Unix()),
+			},
+			log:     relay_api.TaskFeeLog{Address: common.HexToAddress("0x3333333333333333333333333333333333333333").Hex(), Amount: "42", Type: relay_api.TaskFeeLogTypeDeposit},
+			wantErr: ErrTaskFeeDepositTxMismatch,
+		},
+		{
+			name: "wrong value",
+			state: depositRPCState{
+				txHash:        txHash,
+				from:          from,
+				to:            to,
+				value:         big.NewInt(42),
+				input:         "0x",
+				receiptStatus: "0x1",
+				blockNumber:   16,
+				blockTime:     uint64(time.Now().Unix()),
+			},
+			log:     relay_api.TaskFeeLog{Address: from.Hex(), Amount: "43", Type: relay_api.TaskFeeLogTypeDeposit},
+			wantErr: ErrTaskFeeDepositTxMismatch,
+		},
+		{
+			name: "failed receipt",
+			state: depositRPCState{
+				txHash:        txHash,
+				from:          from,
+				to:            to,
+				value:         big.NewInt(42),
+				input:         "0x",
+				receiptStatus: "0x0",
+				blockNumber:   16,
+				blockTime:     uint64(time.Now().Unix()),
+			},
+			log:     relay_api.TaskFeeLog{Address: from.Hex(), Amount: "42", Type: relay_api.TaskFeeLogTypeDeposit},
+			wantErr: ErrTaskFeeDepositTxMismatch,
+		},
+		{
+			name: "non-empty input",
+			state: depositRPCState{
+				txHash:        txHash,
+				from:          from,
+				to:            to,
+				value:         big.NewInt(42),
+				input:         "0x1234",
+				receiptStatus: "0x1",
+				blockNumber:   16,
+				blockTime:     uint64(time.Now().Unix()),
+			},
+			log:     relay_api.TaskFeeLog{Address: from.Hex(), Amount: "42", Type: relay_api.TaskFeeLogTypeDeposit},
+			wantErr: ErrTaskFeeDepositTxMismatch,
+		},
+		{
+			name: "too old",
+			state: depositRPCState{
+				txHash:        txHash,
+				from:          from,
+				to:            to,
+				value:         big.NewInt(42),
+				input:         "0x",
+				receiptStatus: "0x1",
+				blockNumber:   16,
+				blockTime:     uint64(time.Now().Add(-2 * time.Hour).Unix()),
+			},
+			log:     relay_api.TaskFeeLog{Address: from.Hex(), Amount: "42", Type: relay_api.TaskFeeLogTypeDeposit},
+			wantErr: ErrTaskFeeDepositTxTooOld,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			depositAddress := tt.state.to
+			if tt.name == "wrong to" {
+				depositAddress = to
+			}
+			err := validateDepositForStateWithDepositAddress(t, tt.state, tt.log, depositAddress)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSaveDepositRecordsRejectsDuplicateTransactionHash(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.DepositRecord{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	configDir := t.TempDir()
+	configContent := `
+environment: test
+relay:
+  deposit_address: 0x2222222222222222222222222222222222222222
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := config.InitConfig(configDir); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+
+	logs := []relay_api.TaskFeeLog{
+		{
+			ID:      1,
+			Address: "0x1111111111111111111111111111111111111111",
+			Amount:  "42",
+			Type:    relay_api.TaskFeeLogTypeDeposit,
+			Payload: `{"tx_hash":"0x0000000000000000000000000000000000000000000000000000000000001234","network":"arbitrum"}`,
+		},
+		{
+			ID:      2,
+			Address: "0x1111111111111111111111111111111111111111",
+			Amount:  "42",
+			Type:    relay_api.TaskFeeLogTypeDeposit,
+			Payload: `{"tx_hash":"0x0000000000000000000000000000000000000000000000000000000000001234","network":"arbitrum"}`,
+		},
+	}
+	err = saveDepositRecords(context.Background(), db, logs)
+	if !errors.Is(err, ErrTaskFeeDepositTxHashDuplicate) {
+		t.Fatalf("expected ErrTaskFeeDepositTxHashDuplicate, got %v", err)
 	}
 }

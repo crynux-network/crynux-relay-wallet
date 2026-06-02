@@ -53,6 +53,7 @@ relay:
     host: "http://crynux_relay:8080"
     private_key_file: "/app/config/relay_api_privkey.txt"
   deposit_address: ""
+  withdrawal_fee_address: ""
 tasks:
   sync_task_fee_logs:
     interval_seconds: 5

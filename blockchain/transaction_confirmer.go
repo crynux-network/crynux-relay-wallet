@@ -25,7 +25,7 @@ type TransactionConfirmer struct {
 	isRunning     bool
 	batchSize     int
 	pollInterval  time.Duration
-	limiter chan struct{}
+	limiter       chan struct{}
 }
 
 // NewTransactionConfirmer creates a new transaction confirmer instance
@@ -100,7 +100,7 @@ func (tc *TransactionConfirmer) getSentTransactions(ctx context.Context) {
 					if err != nil {
 						return nil, err
 					}
-				
+
 					if len(transactions) == 0 {
 						break
 					}
@@ -231,7 +231,7 @@ func (tc *TransactionConfirmer) handleSuccessfulTransaction(ctx context.Context,
 // handleFailedTransaction handles a failed transaction
 func (tc *TransactionConfirmer) handleFailedTransaction(ctx context.Context, client *BlockchainClient, transaction *models.BlockchainTransaction, receipt *types.Receipt) error {
 	// Get error message from receipt
-	errorMsg, err := client.GetErrorMessageFromReceipt(ctx, receipt)
+	errorMsg, err := client.GetErrorMessageFromTransaction(ctx, transaction, receipt)
 	if err != nil {
 		errorMsg = fmt.Sprintf("Transaction failed with status 0: %v", err)
 	}

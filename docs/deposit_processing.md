@@ -21,14 +21,17 @@ For each synced batch, the wallet validates deposits before any balance update i
 2. Parse deposit payload (`tx_hash`, `network`).
 3. Query blockchain transaction receipt by `tx_hash`.
 4. Verify receipt status is successful.
-5. Query transaction by `tx_hash`.
-6. Verify transaction receiver equals configured `relay.deposit_address`.
-7. Recover sender from transaction signature and verify it equals event `address`.
-8. Verify transaction value equals event `amount`.
-9. Query the transaction block and verify transaction age does not exceed configured `tasks.sync_task_fee_logs.deposit_max_age_seconds`.
-10. Persist with unique key `(network, tx_hash)` and fail-fast on duplicate via database constraint.
+5. Query raw transaction transfer fields by `tx_hash` using `eth_getTransactionByHash`.
+6. Verify raw transaction `to` equals configured `relay.deposit_address`.
+7. Verify raw transaction `from` equals event `address`.
+8. Verify raw transaction `value` equals event `amount`.
+9. Verify raw transaction `input` is `0x`, so only ordinary native transfers are accepted as deposits.
+10. Query the transaction block header and verify transaction age does not exceed configured `tasks.sync_task_fee_logs.deposit_max_age_seconds`.
+11. Persist with unique key `(network, tx_hash)` and fail-fast on duplicate via database constraint.
 
 If all validations pass, the deposit is marked as accepted for persistence.
+
+The wallet MUST NOT decode the full transaction into a typed Ethereum transaction for deposit validation. The wallet MUST reject the deposit if raw transaction fields are unavailable, malformed, or inconsistent with the event log.
 
 ## Rejection Policy
 

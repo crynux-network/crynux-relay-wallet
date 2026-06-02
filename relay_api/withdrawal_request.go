@@ -26,6 +26,7 @@ type WithdrawalRequest struct {
 	Address             string         `json:"address"`
 	BenefitAddress      string         `json:"benefit_address"`
 	Amount              string         `json:"amount"`
+	WithdrawalFee       string         `json:"withdrawal_fee"`
 	Network             string         `json:"network"`
 	Status              WithdrawStatus `json:"status"`
 	RelayAccountEventID uint           `json:"relay_account_event_id"`
