@@ -4,6 +4,8 @@ import (
 	"crynux_relay_wallet/config"
 	"fmt"
 	"os"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func SendAlert(taskName, alertMessage string) error {
@@ -22,6 +24,18 @@ func SendAlert(taskName, alertMessage string) error {
 		return err
 	}
 	return nil
+}
+
+func SafeSendAlert(taskName, alertMessage string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Errorf("[Task:%s] Alert send failed due to panic: %v", taskName, recovered)
+		}
+	}()
+
+	if err := SendAlert(taskName, alertMessage); err != nil {
+		log.Errorf("[Task:%s] Alert send failed: %v", taskName, err)
+	}
 }
 
 func SendHeartbeat() error {

@@ -34,10 +34,11 @@ The wallet MUST enforce all rules below before storing a request:
 
 - Amount MUST be parseable as integer and MUST be greater than or equal to configured minimum withdrawal amount.
 - Request status MUST be `pending`.
-- Aggregated per-network withdrawal amount in the batch MUST NOT exceed system wallet on-chain balance for that network.
 - Every request address in the batch MUST already exist in local `relay_accounts`.
 - Aggregated per-address withdrawal amount in the batch MUST NOT exceed local account balance.
 - Benefit address fetched from chain (`GetBenefitAddress`) MUST equal request `benefit_address`.
+
+System wallet token and gas balances MUST NOT be validated during request synchronization. Insufficient system wallet balance SHALL be handled during blockchain transaction sending.
 
 Validation failure SHALL fail the sync attempt.
 
@@ -88,7 +89,12 @@ The blockchain configuration fields for withdrawal gas control are:
 - `max_fee_per_gas`: maximum allowed EIP-1559 `maxFeePerGas` in wei. A value of `0` means no wallet-side cap.
 - `max_priority_fee_per_gas`: maximum allowed EIP-1559 `maxPriorityFeePerGas` in wei. A value of `0` means no wallet-side cap.
 
-The sender MUST estimate dynamic fee transaction parameters against the target network after it claims a pending blockchain transaction:
+The sender MUST validate hot wallet payout balance before gas estimation:
+
+- For native-token withdrawals, the hot wallet native token balance MUST cover the withdrawal amount.
+- For ERC20 withdrawals, the hot wallet ERC20 token balance MUST cover the withdrawal amount.
+
+The sender MUST estimate dynamic fee transaction parameters against the target network after it claims a pending blockchain transaction and validates payout balance:
 
 1. Build the transaction call message from the pending withdrawal payload.
 2. Call `eth_estimateGas`.
@@ -99,6 +105,10 @@ The sender MUST estimate dynamic fee transaction parameters against the target n
 7. Compute `maxFeePerGas = latestBaseFee * 2 + suggestedPriorityFee`.
 8. Fail sending if `maxFeePerGas` exceeds configured `max_fee_per_gas` when that cap is non-zero.
 9. Fail sending if `suggestedPriorityFee` exceeds configured `max_priority_fee_per_gas` when that cap is non-zero.
+
+After fee estimation, the sender MUST validate hot wallet native token balance for gas. For native-token withdrawals, the required native balance MUST cover `withdrawal amount + gasLimit * maxFeePerGas`. For ERC20 withdrawals, the required native balance MUST cover `gasLimit * maxFeePerGas`.
+
+If hot wallet native payout balance, ERC20 payout balance, or native gas balance is insufficient, the sender MUST return a distinct error for that shortage, log the error, send an operator alert through the standard alert path, and release the unbroadcasted transaction back to `pending`.
 
 Blockchain transaction persistence is a local queueing step, not proof of network submission. If estimation fails or exceeds configured caps before broadcast, the sender MUST release the transaction back to `pending` without `tx_hash`, and the transaction remains eligible for a later send attempt.
 

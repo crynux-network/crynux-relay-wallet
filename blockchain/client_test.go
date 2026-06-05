@@ -5,12 +5,14 @@ import (
 	"crynux_relay_wallet/models"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -96,6 +98,35 @@ func TestBuildCallMsgFromTransactionUsesDatabaseFields(t *testing.T) {
 	}
 	if string(msg.Data) != string([]byte{0x12, 0x34}) {
 		t.Fatalf("expected data 0x1234, got %x", msg.Data)
+	}
+}
+
+func TestParseERC20TransferAmount(t *testing.T) {
+	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	amount := big.NewInt(123)
+	data, err := erc20ABI.Pack("transfer", to, amount)
+	if err != nil {
+		t.Fatalf("pack transfer failed: %v", err)
+	}
+
+	got, err := parseERC20TransferAmount(&models.BlockchainTransaction{
+		Data: sql.NullString{String: hexutil.Encode(data), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("parseERC20TransferAmount failed: %v", err)
+	}
+	if got.Cmp(amount) != 0 {
+		t.Fatalf("expected amount %s, got %s", amount.String(), got.String())
+	}
+}
+
+func TestIsHotWalletBalanceError(t *testing.T) {
+	err := fmt.Errorf("wrapped error: %w", ErrHotWalletERC20BalanceInsufficient)
+	if !isHotWalletBalanceError(err) {
+		t.Fatalf("expected hot wallet balance error")
+	}
+	if isHotWalletBalanceError(fmt.Errorf("other error")) {
+		t.Fatalf("expected non-balance error")
 	}
 }
 

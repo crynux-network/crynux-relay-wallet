@@ -41,9 +41,6 @@ var ErrWithdrawalRequestAmountInvalid = NewWithdrawalRequestError("invalid withd
 var ErrWithdrawalRequestAddressNotExists = NewWithdrawalRequestError("withdrawal request address not exists")
 var ErrWithdrawalRequestAmountTooLarge = NewWithdrawalRequestError("withdrawal request amount is too large")
 var ErrWithdrawalRequestTaskFeeNotEnough = NewWithdrawalRequestError("withdrawal request task fee not enough")
-var ErrWithdrawalRequestRelayHotWalletNativeBalanceInsufficient = NewWithdrawalRequestError("relay hot wallet native token balance is insufficient")
-var ErrWithdrawalRequestRelayHotWalletERC20BalanceInsufficient = NewWithdrawalRequestError("relay hot wallet ERC20 token balance is insufficient")
-var ErrWithdrawalRequestRelayHotWalletNativeGasFeeInsufficient = NewWithdrawalRequestError("relay hot wallet native gas fee is insufficient")
 var ErrWithdrawalRequestBeneficialAddressInvalid = NewWithdrawalRequestError("withdrawal request beneficial address is invalid")
 var ErrWithdrawalRequestAmountTooSmall = NewWithdrawalRequestError("withdrawal request amount is too small")
 var ErrWithdrawalRequestTransactionUnconfirmedTimeout = NewWithdrawalRequestError("withdrawal request transaction remains unconfirmed after timeout")
@@ -127,7 +124,6 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 	}
 
 	amountMap := make(map[string]*big.Int)
-	networkAmountMap := make(map[string]*big.Int)
 	for _, request := range requests {
 		if request.Status != relay_api.WithdrawStatusPending {
 			return ErrWithdrawalRequestStatusInvalid
@@ -145,46 +141,6 @@ func checkWithdrawalRequests(ctx context.Context, db *gorm.DB, requests []relay_
 			amountMap[request.Address].Add(amountMap[request.Address], totalAmount)
 		} else {
 			amountMap[request.Address] = big.NewInt(0).Set(totalAmount)
-		}
-		if _, ok := networkAmountMap[request.Network]; ok {
-			networkAmountMap[request.Network].Add(networkAmountMap[request.Network], amount)
-		} else {
-			networkAmountMap[request.Network] = big.NewInt(0).Set(amount)
-		}
-	}
-
-	for network, amount := range networkAmountMap {
-		bc, err := blockchain.GetBlockchainClient(network)
-		if err != nil {
-			return err
-		}
-		blockchainConfig := appConfig.Blockchains[network]
-		switch blockchainConfig.TokenType {
-		case config.TokenTypeNative:
-			balance, err := bc.BalanceAt(ctx, common.HexToAddress(bc.Address))
-			if err != nil {
-				return err
-			}
-			if balance.Cmp(amount) < 0 {
-				return ErrWithdrawalRequestRelayHotWalletNativeBalanceInsufficient
-			}
-		case config.TokenTypeERC20:
-			tokenBalance, err := bc.TokenBalanceAt(ctx, common.HexToAddress(blockchainConfig.TokenAddress), common.HexToAddress(bc.Address))
-			if err != nil {
-				return err
-			}
-			if tokenBalance.Cmp(amount) < 0 {
-				return ErrWithdrawalRequestRelayHotWalletERC20BalanceInsufficient
-			}
-			gasBalance, err := bc.BalanceAt(ctx, common.HexToAddress(bc.Address))
-			if err != nil {
-				return err
-			}
-			if gasBalance.Sign() <= 0 {
-				return ErrWithdrawalRequestRelayHotWalletNativeGasFeeInsufficient
-			}
-		default:
-			return blockchain.ErrBlockchainNotFound
 		}
 	}
 
