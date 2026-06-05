@@ -1,7 +1,10 @@
 package blockchain
 
 import (
+	"bytes"
 	"context"
+	"crynux_relay_wallet/alert"
+	"crynux_relay_wallet/config"
 	"crynux_relay_wallet/models"
 	"errors"
 	"fmt"
@@ -16,6 +19,10 @@ import (
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
+
+var ErrHotWalletNativeBalanceInsufficient = errors.New("relay hot wallet native token balance is insufficient")
+var ErrHotWalletERC20BalanceInsufficient = errors.New("relay hot wallet ERC20 token balance is insufficient")
+var ErrHotWalletNativeGasFeeInsufficient = errors.New("relay hot wallet native gas fee is insufficient")
 
 // TransactionSender sends pending transactions from database to blockchain
 type TransactionSender struct {
@@ -207,6 +214,7 @@ func (ts *TransactionSender) sendTransaction(ctx context.Context, transaction *m
 	if err != nil {
 		log.Errorf("Failed to send raw transaction %d, nonce: %d, %v", transaction.ID, nonce, err)
 		err = client.processSendingTxError(err)
+		ts.alertHotWalletBalanceError(transaction, err)
 		if releaseErr := transaction.ReleaseSending(ctx, ts.db, err.Error()); releaseErr != nil {
 			log.Errorf("Failed to release transaction %d after send error: %v", transaction.ID, releaseErr)
 		}
@@ -234,6 +242,10 @@ func (ts *TransactionSender) sendRawTransaction(ctx context.Context, client *Blo
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	if err := validateHotWalletPayoutBalance(callCtx, client, transaction); err != nil {
+		return "", err
+	}
+
 	gasLimit, err := estimateTransactionGasLimit(callCtx, client, transaction)
 	if err != nil {
 		return "", err
@@ -241,6 +253,10 @@ func (ts *TransactionSender) sendRawTransaction(ctx context.Context, client *Blo
 
 	gasFeeCap, gasTipCap, err := suggestDynamicFeeCaps(callCtx, client)
 	if err != nil {
+		return "", err
+	}
+
+	if err := validateHotWalletGasBalance(callCtx, client, transaction, gasLimit, gasFeeCap); err != nil {
 		return "", err
 	}
 
@@ -269,6 +285,115 @@ func (ts *TransactionSender) sendRawTransaction(ctx context.Context, client *Blo
 	}
 
 	return signedTx.Hash().Hex(), nil
+}
+
+func isHotWalletBalanceError(err error) bool {
+	return errors.Is(err, ErrHotWalletNativeBalanceInsufficient) ||
+		errors.Is(err, ErrHotWalletERC20BalanceInsufficient) ||
+		errors.Is(err, ErrHotWalletNativeGasFeeInsufficient)
+}
+
+func (ts *TransactionSender) alertHotWalletBalanceError(transaction *models.BlockchainTransaction, err error) {
+	if !isHotWalletBalanceError(err) {
+		return
+	}
+	if transaction.StatusMessage.Valid && transaction.StatusMessage.String == err.Error() {
+		return
+	}
+	msg := fmt.Sprintf("Hot wallet balance is insufficient for transaction %d on network %s: %v", transaction.ID, transaction.Network, err)
+	log.Error(msg)
+	alert.SafeSendAlert("TransactionSender", msg)
+}
+
+func parseTransactionValue(transaction *models.BlockchainTransaction) (*big.Int, error) {
+	value, ok := new(big.Int).SetString(transaction.Value, 10)
+	if !ok {
+		return nil, errors.New("transaction value is invalid")
+	}
+	return value, nil
+}
+
+func parseERC20TransferAmount(transaction *models.BlockchainTransaction) (*big.Int, error) {
+	data, err := parseTransactionData(transaction.Data)
+	if err != nil {
+		return nil, err
+	}
+	method := erc20ABI.Methods["transfer"]
+	if len(data) < len(method.ID) || !bytes.Equal(data[:len(method.ID)], method.ID) {
+		return nil, errors.New("transaction data is not ERC20 transfer data")
+	}
+	values, err := method.Inputs.Unpack(data[len(method.ID):])
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != 2 {
+		return nil, errors.New("invalid ERC20 transfer arguments")
+	}
+	amount, ok := values[1].(*big.Int)
+	if !ok {
+		return nil, errors.New("invalid ERC20 transfer amount")
+	}
+	return amount, nil
+}
+
+func validateHotWalletPayoutBalance(ctx context.Context, client *BlockchainClient, transaction *models.BlockchainTransaction) error {
+	blockchainConfig, ok := config.GetConfig().Blockchains[transaction.Network]
+	if !ok {
+		return ErrBlockchainNotFound
+	}
+	fromAddress := common.HexToAddress(client.Address)
+	switch blockchainConfig.TokenType {
+	case config.TokenTypeNative:
+		value, err := parseTransactionValue(transaction)
+		if err != nil {
+			return err
+		}
+		balance, err := client.BalanceAt(ctx, fromAddress)
+		if err != nil {
+			return err
+		}
+		if balance.Cmp(value) < 0 {
+			return fmt.Errorf("%w: network %s, balance %s, required %s", ErrHotWalletNativeBalanceInsufficient, transaction.Network, balance.String(), value.String())
+		}
+	case config.TokenTypeERC20:
+		amount, err := parseERC20TransferAmount(transaction)
+		if err != nil {
+			return err
+		}
+		tokenBalance, err := client.TokenBalanceAt(ctx, common.HexToAddress(blockchainConfig.TokenAddress), fromAddress)
+		if err != nil {
+			return err
+		}
+		if tokenBalance.Cmp(amount) < 0 {
+			return fmt.Errorf("%w: network %s, balance %s, required %s", ErrHotWalletERC20BalanceInsufficient, transaction.Network, tokenBalance.String(), amount.String())
+		}
+	default:
+		return ErrBlockchainNotFound
+	}
+	return nil
+}
+
+func validateHotWalletGasBalance(ctx context.Context, client *BlockchainClient, transaction *models.BlockchainTransaction, gasLimit uint64, gasFeeCap *big.Int) error {
+	blockchainConfig, ok := config.GetConfig().Blockchains[transaction.Network]
+	if !ok {
+		return ErrBlockchainNotFound
+	}
+	required := big.NewInt(0).Mul(big.NewInt(0).SetUint64(gasLimit), gasFeeCap)
+	if blockchainConfig.TokenType == config.TokenTypeNative {
+		value, err := parseTransactionValue(transaction)
+		if err != nil {
+			return err
+		}
+		required.Add(required, value)
+	}
+	balance, err := client.BalanceAt(ctx, common.HexToAddress(client.Address))
+	if err != nil {
+		return err
+	}
+	if balance.Cmp(required) < 0 {
+		return fmt.Errorf("%w: network %s, balance %s, required %s", ErrHotWalletNativeGasFeeInsufficient, transaction.Network, balance.String(), required.String())
+	}
+	return nil
 }
 
 func estimateTransactionGasLimit(ctx context.Context, client *BlockchainClient, transaction *models.BlockchainTransaction) (uint64, error) {
@@ -355,9 +480,9 @@ func validateDynamicFeeCaps(gasFeeCap *big.Int, gasTipCap *big.Int, maxFeePerGas
 }
 
 func buildDynamicFeeTransaction(transaction *models.BlockchainTransaction, nonce uint64, gasLimit uint64, gasFeeCap *big.Int, gasTipCap *big.Int, chainID *big.Int) (*types.Transaction, error) {
-	value, ok := new(big.Int).SetString(transaction.Value, 10)
-	if !ok {
-		return nil, errors.New("transaction value is invalid")
+	value, err := parseTransactionValue(transaction)
+	if err != nil {
+		return nil, err
 	}
 	if !common.IsHexAddress(transaction.ToAddress) {
 		return nil, errors.New("transaction to address is invalid")

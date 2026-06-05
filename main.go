@@ -41,11 +41,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	
 	log.Infoln("Starting database migration...")
 	startDBMigration()
 	log.Infoln("DB migrations are done!")
-	
+
 	log.Infoln("Initializing blockchain...")
 	if err := blockchain.Init(context.Background()); err != nil {
 		log.Fatalln(err)
@@ -66,13 +65,13 @@ func main() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					log.Errorln(fmt.Sprintf("[Task:%s] panic: %v", taskName, recovered))
-					safeSendAlert(taskName, fmt.Sprintf("[Task:%s] panic: %v", taskName, recovered))
+					alert.SafeSendAlert(taskName, fmt.Sprintf("[Task:%s] panic: %v", taskName, recovered))
 				}
 				wg.Done()
 			}()
 			if err := taskFunc(ctx); err != nil {
 				log.Errorln(fmt.Sprintf("[Task:%s] error: %v", taskName, err))
-				safeSendAlert(taskName, fmt.Sprintf("[Task:%s] error: %v", taskName, err))
+				alert.SafeSendAlert(taskName, fmt.Sprintf("[Task:%s] error: %v", taskName, err))
 			}
 		}()
 	}
@@ -98,17 +97,5 @@ func startDBMigration() {
 			log.Errorln(err.Error())
 		}
 		os.Exit(1)
-	}
-}
-
-func safeSendAlert(taskName, msg string) {
-	defer func() {
-		if alertRecovered := recover(); alertRecovered != nil {
-			log.Errorln(fmt.Sprintf("[Task:%s] Alert send failed due to panic: %v", taskName, alertRecovered))
-		}
-	}()
-
-	if err := alert.SendAlert(taskName, msg); err != nil {
-		log.Errorln(fmt.Sprintf("[Task:%s] Alert send failed: %v", taskName, err))
 	}
 }
