@@ -3,14 +3,16 @@ package blockchain
 import (
 	"context"
 	"crynux_relay_wallet/models"
+	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -157,18 +159,35 @@ func (ts *TransactionSender) sendTransaction(ctx context.Context, transaction *m
 		return nil
 	}
 
-	sentTransactionCount, err := models.GetSentTransactionCountByNetwork(ctx, ts.db, transaction.Network)
+	claimed, err := transaction.ClaimForSending(ctx, ts.db)
 	if err != nil {
 		return err
 	}
-	
+	if !claimed {
+		return nil
+	}
+
+	sentTransactionCount, err := models.GetSentTransactionCountByNetwork(ctx, ts.db, transaction.Network)
+	if err != nil {
+		if releaseErr := transaction.ReleaseSending(ctx, ts.db, err.Error()); releaseErr != nil {
+			log.Errorf("Failed to release transaction %d after send count error: %v", transaction.ID, releaseErr)
+		}
+		return err
+	}
+
 	client, err := GetBlockchainClient(transaction.Network)
 	if err != nil {
+		if releaseErr := transaction.ReleaseSending(ctx, ts.db, err.Error()); releaseErr != nil {
+			log.Errorf("Failed to release transaction %d after client error: %v", transaction.ID, releaseErr)
+		}
 		return err
 	}
 
 	if uint64(sentTransactionCount) >= client.SentTransactionCountLimit {
 		log.Infof("Sent transaction count limit reached for transaction: %d, network %s, skipping", transaction.ID, transaction.Network)
+		if err := transaction.ReleaseSending(ctx, ts.db, "sent transaction count limit reached"); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -177,6 +196,9 @@ func (ts *TransactionSender) sendTransaction(ctx context.Context, transaction *m
 
 	nonce, err := client.GetNonce(ctx)
 	if err != nil {
+		if releaseErr := transaction.ReleaseSending(ctx, ts.db, err.Error()); releaseErr != nil {
+			log.Errorf("Failed to release transaction %d after nonce error: %v", transaction.ID, releaseErr)
+		}
 		return err
 	}
 
@@ -185,6 +207,9 @@ func (ts *TransactionSender) sendTransaction(ctx context.Context, transaction *m
 	if err != nil {
 		log.Errorf("Failed to send raw transaction %d, nonce: %d, %v", transaction.ID, nonce, err)
 		err = client.processSendingTxError(err)
+		if releaseErr := transaction.ReleaseSending(ctx, ts.db, err.Error()); releaseErr != nil {
+			log.Errorf("Failed to release transaction %d after send error: %v", transaction.ID, releaseErr)
+		}
 		return err
 	}
 
@@ -206,42 +231,34 @@ func (ts *TransactionSender) sendRawTransaction(ctx context.Context, client *Blo
 		return "", fmt.Errorf("from address is not the same as the client address")
 	}
 
-	auth, err := client.GetAuth(ctx)
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	gasLimit, err := estimateTransactionGasLimit(callCtx, client, transaction)
 	if err != nil {
 		return "", err
 	}
 
-	auth.Nonce = big.NewInt(int64(nonce))
-	auth.GasPrice = client.GasPrice
-	auth.GasLimit = client.GasLimit
-
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	auth.Context = callCtx
-
-	value, _ := new(big.Int).SetString(transaction.Value, 10)
-	toAddress := common.HexToAddress(transaction.ToAddress)
-	var data []byte
-	if transaction.Data.Valid {
-		data, err = hexutil.Decode(transaction.Data.String)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	baseTx := &types.LegacyTx{
-		To:       &toAddress,
-		Nonce:    nonce,
-		GasPrice: client.GasPrice,
-		Gas:      client.GasLimit,
-		Value:    value,
-		Data:     data,
-	}
-
-	rawTx := types.NewTx(baseTx)
-
-	signedTx, err := auth.Signer(auth.From, rawTx)
+	gasFeeCap, gasTipCap, err := suggestDynamicFeeCaps(callCtx, client)
 	if err != nil {
+		return "", err
+	}
+
+	rawTx, err := buildDynamicFeeTransaction(transaction, nonce, gasLimit, gasFeeCap, gasTipCap, client.ChainID)
+	if err != nil {
+		return "", err
+	}
+
+	privateKey, err := crypto.HexToECDSA(client.PrivateKey)
+	if err != nil {
+		return "", err
+	}
+	signedTx, err := types.SignTx(rawTx, types.LatestSignerForChainID(client.ChainID), privateKey)
+	if err != nil {
+		return "", err
+	}
+
+	if err := client.Limiter.Wait(callCtx); err != nil {
 		return "", err
 	}
 
@@ -252,4 +269,112 @@ func (ts *TransactionSender) sendRawTransaction(ctx context.Context, client *Blo
 	}
 
 	return signedTx.Hash().Hex(), nil
+}
+
+func estimateTransactionGasLimit(ctx context.Context, client *BlockchainClient, transaction *models.BlockchainTransaction) (uint64, error) {
+	msg, err := BuildCallMsgFromTransaction(transaction)
+	if err != nil {
+		return 0, err
+	}
+	if err := client.Limiter.Wait(ctx); err != nil {
+		return 0, err
+	}
+	estimatedGas, err := client.RpcClient.EstimateGas(ctx, msg)
+	if err != nil {
+		return 0, err
+	}
+	gasLimit, err := addGasLimitBuffer(estimatedGas, client.GasLimitBufferPercent)
+	if err != nil {
+		return 0, err
+	}
+	if client.GasLimit > 0 && gasLimit > client.GasLimit {
+		return 0, fmt.Errorf("estimated gas limit %d exceeds configured gas limit %d", gasLimit, client.GasLimit)
+	}
+	return gasLimit, nil
+}
+
+func ValidateTransactionFeeCaps(ctx context.Context, transaction *models.BlockchainTransaction) error {
+	client, err := GetBlockchainClient(transaction.Network)
+	if err != nil {
+		return err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := estimateTransactionGasLimit(callCtx, client, transaction); err != nil {
+		return err
+	}
+	_, _, err = suggestDynamicFeeCaps(callCtx, client)
+	return err
+}
+
+func addGasLimitBuffer(estimatedGas uint64, bufferPercent uint64) (uint64, error) {
+	if estimatedGas > math.MaxUint64/(100+bufferPercent) {
+		return 0, errors.New("estimated gas limit is too large")
+	}
+	gasLimit := estimatedGas * (100 + bufferPercent) / 100
+	if gasLimit == 0 {
+		return 0, errors.New("estimated gas limit is zero")
+	}
+	return gasLimit, nil
+}
+
+func suggestDynamicFeeCaps(ctx context.Context, client *BlockchainClient) (*big.Int, *big.Int, error) {
+	if err := client.Limiter.Wait(ctx); err != nil {
+		return nil, nil, err
+	}
+	header, err := client.RpcClient.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if header.BaseFee == nil {
+		return nil, nil, errors.New("latest block does not include base fee")
+	}
+	if err := client.Limiter.Wait(ctx); err != nil {
+		return nil, nil, err
+	}
+	gasTipCap, err := client.RpcClient.SuggestGasTipCap(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	gasFeeCap := big.NewInt(0).Mul(header.BaseFee, big.NewInt(2))
+	gasFeeCap.Add(gasFeeCap, gasTipCap)
+	if err := validateDynamicFeeCaps(gasFeeCap, gasTipCap, client.MaxFeePerGas, client.MaxPriorityFeePerGas); err != nil {
+		return nil, nil, err
+	}
+	return gasFeeCap, gasTipCap, nil
+}
+
+func validateDynamicFeeCaps(gasFeeCap *big.Int, gasTipCap *big.Int, maxFeePerGas *big.Int, maxPriorityFeePerGas *big.Int) error {
+	if maxFeePerGas != nil && gasFeeCap.Cmp(maxFeePerGas) > 0 {
+		return fmt.Errorf("estimated max fee per gas %s exceeds configured cap %s", gasFeeCap.String(), maxFeePerGas.String())
+	}
+	if maxPriorityFeePerGas != nil && gasTipCap.Cmp(maxPriorityFeePerGas) > 0 {
+		return fmt.Errorf("estimated max priority fee per gas %s exceeds configured cap %s", gasTipCap.String(), maxPriorityFeePerGas.String())
+	}
+	return nil
+}
+
+func buildDynamicFeeTransaction(transaction *models.BlockchainTransaction, nonce uint64, gasLimit uint64, gasFeeCap *big.Int, gasTipCap *big.Int, chainID *big.Int) (*types.Transaction, error) {
+	value, ok := new(big.Int).SetString(transaction.Value, 10)
+	if !ok {
+		return nil, errors.New("transaction value is invalid")
+	}
+	if !common.IsHexAddress(transaction.ToAddress) {
+		return nil, errors.New("transaction to address is invalid")
+	}
+	data, err := parseTransactionData(transaction.Data)
+	if err != nil {
+		return nil, err
+	}
+	toAddress := common.HexToAddress(transaction.ToAddress)
+	return types.NewTx(&types.DynamicFeeTx{
+		ChainID:   chainID,
+		Nonce:     nonce,
+		GasTipCap: gasTipCap,
+		GasFeeCap: gasFeeCap,
+		Gas:       gasLimit,
+		To:        &toAddress,
+		Value:     value,
+		Data:      data,
+	}), nil
 }

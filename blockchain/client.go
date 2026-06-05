@@ -10,14 +10,12 @@ import (
 	"errors"
 	"math/big"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -35,8 +33,10 @@ type BlockchainClient struct {
 	RpcClient                      *ethclient.Client
 	BenefitAddressContractInstance *bindings.BenefitAddress
 	ChainID                        *big.Int
-	GasPrice                       *big.Int
 	GasLimit                       uint64
+	GasLimitBufferPercent          uint64
+	MaxFeePerGas                   *big.Int
+	MaxPriorityFeePerGas           *big.Int
 	Address                        string
 	PrivateKey                     string
 	Nonce                          *uint64
@@ -102,11 +102,6 @@ func initBlockchainClient(ctx context.Context, network string) error {
 		return err
 	}
 
-	gasPrice, err := initSuggestGasPrice(ctx, client, blockchain.GasPrice)
-	if err != nil {
-		return err
-	}
-
 	chainID, err := initChainID(ctx, client, blockchain.ChainID)
 	if err != nil {
 		return err
@@ -125,8 +120,10 @@ func initBlockchainClient(ctx context.Context, network string) error {
 		RpcClient:                      client,
 		BenefitAddressContractInstance: benefitAddressInstance,
 		ChainID:                        chainID,
-		GasPrice:                       gasPrice,
 		GasLimit:                       blockchain.GasLimit,
+		GasLimitBufferPercent:          blockchain.GasLimitBufferPercent,
+		MaxFeePerGas:                   optionalUint64BigInt(blockchain.MaxFeePerGas),
+		MaxPriorityFeePerGas:           optionalUint64BigInt(blockchain.MaxPriorityFeePerGas),
 		Address:                        blockchain.Account.Address,
 		PrivateKey:                     blockchain.Account.PrivateKey,
 		Nonce:                          &nonce,
@@ -147,21 +144,11 @@ func Init(ctx context.Context) error {
 	return nil
 }
 
-func initSuggestGasPrice(ctx context.Context, client *ethclient.Client, gasPriceNum uint64) (*big.Int, error) {
-	var gasPrice *big.Int
-	if gasPriceNum > 0 {
-		gasPrice = big.NewInt(0).SetUint64(gasPriceNum)
-	} else {
-		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		p, err := client.SuggestGasPrice(callCtx)
-		if err != nil {
-			return nil, err
-		}
-		log.Debugln("Estimated gas price from blockchain: " + p.String())
-		gasPrice = p
+func optionalUint64BigInt(value uint64) *big.Int {
+	if value == 0 {
+		return nil
 	}
-	return gasPrice, nil
+	return big.NewInt(0).SetUint64(value)
 }
 
 func initChainID(ctx context.Context, client *ethclient.Client, chainIDNum uint64) (*big.Int, error) {
@@ -259,25 +246,6 @@ func (client *BlockchainClient) TokenBalanceAt(ctx context.Context, tokenAddress
 	return balance, nil
 }
 
-func (client *BlockchainClient) GetAuth(ctx context.Context) (*bind.TransactOpts, error) {
-	privateKey, err := crypto.HexToECDSA(client.PrivateKey)
-	if err != nil {
-		return nil, err
-	}
-	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, client.ChainID)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Debugln("Set gas limit to:" + strconv.FormatUint(client.GasLimit, 10))
-
-	auth.Value = big.NewInt(0)
-	auth.GasLimit = client.GasLimit
-	auth.GasPrice = client.GasPrice
-
-	return auth, nil
-}
-
 func (client *BlockchainClient) WaitTxReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	deadline, hasDeadline := ctx.Deadline()
 	for {
@@ -302,8 +270,6 @@ func (client *BlockchainClient) WaitTxReceipt(ctx context.Context, txHash common
 }
 
 func (client *BlockchainClient) SendETH(ctx context.Context, to common.Address, amount *big.Int) (*types.Transaction, error) {
-	gasLimit := client.GasLimit
-
 	client.NonceMu.Lock()
 	defer client.NonceMu.Unlock()
 
@@ -312,7 +278,25 @@ func (client *BlockchainClient) SendETH(ctx context.Context, to common.Address, 
 		return nil, err
 	}
 
-	tx := types.NewTransaction(nonce, to, amount, gasLimit, client.GasPrice, nil)
+	transaction := &models.BlockchainTransaction{
+		FromAddress: client.Address,
+		ToAddress:   to.Hex(),
+		Value:       amount.String(),
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	gasLimit, err := estimateTransactionGasLimit(callCtx, client, transaction)
+	if err != nil {
+		return nil, err
+	}
+	gasFeeCap, gasTipCap, err := suggestDynamicFeeCaps(callCtx, client)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := buildDynamicFeeTransaction(transaction, nonce, gasLimit, gasFeeCap, gasTipCap, client.ChainID)
+	if err != nil {
+		return nil, err
+	}
 
 	privateKey, err := crypto.HexToECDSA(client.PrivateKey)
 	if err != nil {
@@ -328,8 +312,6 @@ func (client *BlockchainClient) SendETH(ctx context.Context, to common.Address, 
 		return nil, err
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	err = client.RpcClient.SendTransaction(callCtx, signedTx)
 	if err != nil {
 		err = client.processSendingTxError(err)
@@ -401,6 +383,19 @@ func (client *BlockchainClient) GetTransactionTransfer(ctx context.Context, txHa
 
 // QueueSendETH queues a send ETH transaction to be sent later
 func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
+	transaction, err := NewSendETHTransaction(to, amount, network)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := transaction.Save(ctx, db); err != nil {
+		return nil, err
+	}
+
+	return transaction, nil
+}
+
+func NewSendETHTransaction(to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
 	appConfig := config.GetConfig()
 	blockchain, ok := appConfig.Blockchains[network]
 	if !ok {
@@ -417,6 +412,15 @@ func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *b
 		MaxRetries:  blockchain.MaxRetries,
 	}
 
+	return transaction, nil
+}
+
+func QueueSendERC20(ctx context.Context, db *gorm.DB, tokenAddress common.Address, to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
+	transaction, err := NewSendERC20Transaction(tokenAddress, to, amount, network)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := transaction.Save(ctx, db); err != nil {
 		return nil, err
 	}
@@ -424,7 +428,7 @@ func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *b
 	return transaction, nil
 }
 
-func QueueSendERC20(ctx context.Context, db *gorm.DB, tokenAddress common.Address, to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
+func NewSendERC20Transaction(tokenAddress common.Address, to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
 	appConfig := config.GetConfig()
 	blockchain, ok := appConfig.Blockchains[network]
 	if !ok {
@@ -447,10 +451,6 @@ func QueueSendERC20(ctx context.Context, db *gorm.DB, tokenAddress common.Addres
 			Valid:  true,
 		},
 		MaxRetries: blockchain.MaxRetries,
-	}
-
-	if err := transaction.Save(ctx, db); err != nil {
-		return nil, err
 	}
 
 	return transaction, nil

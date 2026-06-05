@@ -315,26 +315,29 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 	for record.Status == models.WithdrawStatusPending {
 
 		if !record.BlockchainTransactionID.Valid {
+			var toAddress common.Address
+			if record.BenefitAddress != "" {
+				toAddress = common.HexToAddress(record.BenefitAddress)
+			} else {
+				toAddress = common.HexToAddress(record.Address)
+			}
+			blockchainConfig := config.GetConfig().Blockchains[record.Network]
+			switch blockchainConfig.TokenType {
+			case config.TokenTypeNative:
+				blockchainTransaction, err = blockchain.NewSendETHTransaction(toAddress, big.NewInt(0).Set(&record.Amount.Int), record.Network)
+			case config.TokenTypeERC20:
+				blockchainTransaction, err = blockchain.NewSendERC20Transaction(common.HexToAddress(blockchainConfig.TokenAddress), toAddress, big.NewInt(0).Set(&record.Amount.Int), record.Network)
+			default:
+				err = blockchain.ErrBlockchainNotFound
+			}
+			if err != nil {
+				return err
+			}
+
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
-				var toAddress common.Address
-				if record.BenefitAddress != "" {
-					toAddress = common.HexToAddress(record.BenefitAddress)
-				} else {
-					toAddress = common.HexToAddress(record.Address)
-				}
-				blockchainConfig := config.GetConfig().Blockchains[record.Network]
-				switch blockchainConfig.TokenType {
-				case config.TokenTypeNative:
-					blockchainTransaction, err = blockchain.QueueSendETH(ctx, tx, toAddress, big.NewInt(0).Set(&record.Amount.Int), record.Network)
-				case config.TokenTypeERC20:
-					blockchainTransaction, err = blockchain.QueueSendERC20(ctx, tx, common.HexToAddress(blockchainConfig.TokenAddress), toAddress, big.NewInt(0).Set(&record.Amount.Int), record.Network)
-				default:
-					err = blockchain.ErrBlockchainNotFound
-				}
-				if err != nil {
+				if err = blockchainTransaction.Save(ctx, tx); err != nil {
 					return err
 				}
-
 				record.BlockchainTransactionID = sql.NullInt64{Int64: int64(blockchainTransaction.ID), Valid: true}
 				return tx.Save(record).Error
 			})
@@ -342,22 +345,15 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 				return err
 			}
 		} else {
-			blockchainTransaction, err = models.GetTransactionByID(ctx, db, uint(record.BlockchainTransactionID.Int64))
+			blockchainTransaction, err = getCurrentBlockchainTransaction(ctx, db, uint(record.BlockchainTransactionID.Int64))
 			if err != nil {
 				return err
 			}
-			if blockchainTransaction.Status == models.TransactionStatusFailed {
-				retryTransactions, err := models.GetRetryTransactionsByID(ctx, db, uint(record.BlockchainTransactionID.Int64))
-				if err != nil {
-					return err
-				}
-				if len(retryTransactions) > 0 {
-					blockchainTransaction = &retryTransactions[len(retryTransactions)-1]
-				}
-			}
 		}
 
-		for blockchainTransaction.Status != models.TransactionStatusConfirmed && blockchainTransaction.Status != models.TransactionStatusFailed {
+		for blockchainTransaction.Status != models.TransactionStatusConfirmed &&
+			blockchainTransaction.Status != models.TransactionStatusFailed &&
+			blockchainTransaction.Status != models.TransactionStatusCancelled {
 			err = blockchainTransaction.Sync(ctx, db)
 			if err != nil {
 				return err
@@ -395,6 +391,11 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 			if err != nil {
 				return err
 			}
+		} else if blockchainTransaction.Status == models.TransactionStatusCancelled {
+			err = record.UpdateStatus(ctx, db, models.WithdrawStatusFailed)
+			if err != nil {
+				return err
+			}
 		} else if blockchainTransaction.RetryCount >= blockchainTransaction.MaxRetries {
 			err = record.UpdateStatus(ctx, db, models.WithdrawStatusFailed)
 			if err != nil {
@@ -422,6 +423,24 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 	return nil
 }
 
+func getCurrentBlockchainTransaction(ctx context.Context, db *gorm.DB, id uint) (*models.BlockchainTransaction, error) {
+	blockchainTransaction, err := models.GetTransactionByID(ctx, db, id)
+	if err != nil {
+		return nil, err
+	}
+	if blockchainTransaction.Status != models.TransactionStatusFailed {
+		return blockchainTransaction, nil
+	}
+	retryTransactions, err := models.GetRetryTransactionsByID(ctx, db, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(retryTransactions) > 0 {
+		blockchainTransaction = &retryTransactions[len(retryTransactions)-1]
+	}
+	return blockchainTransaction, nil
+}
+
 func rejectTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *models.WithdrawRecord) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -443,7 +462,31 @@ func handleTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *mo
 		return err
 	}
 	if record.BlockchainTransactionID.Valid {
-		log.Errorf("ProcessWithdrawalRecords: withdrawal record %d has unconfirmed blockchain transaction %d after timeout", record.ID, record.BlockchainTransactionID.Int64)
+		blockchainTransaction, err := getCurrentBlockchainTransaction(ctx, db, uint(record.BlockchainTransactionID.Int64))
+		if err != nil {
+			return err
+		}
+		if blockchainTransaction.Status == models.TransactionStatusPending && !blockchainTransaction.TxHash.Valid {
+			cancelled, err := blockchainTransaction.CancelUnbroadcasted(ctx, db, "Withdrawal request timed out before broadcast")
+			if err != nil {
+				return err
+			}
+			if cancelled {
+				if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
+					return fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
+				}
+				log.Infof("ProcessWithdrawalRecords: rejected timeout withdrawal record %d after cancelling unbroadcasted blockchain transaction %d", record.ID, blockchainTransaction.ID)
+				return nil
+			}
+		}
+		if blockchainTransaction.Status == models.TransactionStatusCancelled {
+			if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
+				return fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
+			}
+			log.Infof("ProcessWithdrawalRecords: rejected timeout withdrawal record %d with cancelled blockchain transaction %d", record.ID, blockchainTransaction.ID)
+			return nil
+		}
+		log.Errorf("ProcessWithdrawalRecords: withdrawal record %d has non-cancellable blockchain transaction %d after timeout", record.ID, blockchainTransaction.ID)
 		return ErrWithdrawalRequestTransactionUnconfirmedTimeout
 	}
 	if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {

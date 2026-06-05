@@ -51,6 +51,7 @@ environment: debug
 blockchains:
   network_a:
     token_type: native
+    gas_limit_buffer_percent: 20
     contracts:
       benefit_address: "0x0000000000000000000000000000000000000001"
     account:
@@ -59,6 +60,7 @@ blockchains:
   network_b:
     token_type: erc20
     token_address: "0x0000000000000000000000000000000000000002"
+    gas_limit_buffer_percent: 20
     contracts:
       benefit_address: "0x0000000000000000000000000000000000000003"
     account:
@@ -105,6 +107,7 @@ environment: debug
 blockchains:
   network_a:
     token_type: native
+    gas_limit_buffer_percent: 20
     contracts:
       benefit_address: "0x0000000000000000000000000000000000000001"
     account:
@@ -112,6 +115,7 @@ blockchains:
       private_key_file: %s
   network_b:
     token_type: native
+    gas_limit_buffer_percent: 20
     contracts:
       benefit_address: "0x0000000000000000000000000000000000000002"
     account:
