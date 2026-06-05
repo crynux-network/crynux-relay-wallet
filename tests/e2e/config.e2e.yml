@@ -21,6 +21,7 @@ blockchains:
   dymension:
     rps: 20
     rpc_endpoint: "https://json-rpc.testnet-dym.crynux.io"
+    token_type: "native"
     gas_limit: 4294967
     gas_price: 0
     chain_id: 1313161573
@@ -36,6 +37,7 @@ blockchains:
   near:
     rps: 20
     rpc_endpoint: "https://json-rpc.testnet-near.crynux.io"
+    token_type: "native"
     gas_limit: 4294967
     gas_price: 0
     chain_id: 1313161574
@@ -44,6 +46,23 @@ blockchains:
       private_key_file: "/app/config/blockchain_privkey.txt"
     contracts:
       benefit_address: "0xf57a8f8F7ab52EBD7971A65e9B44C767d3119c4f"
+    max_retries: 3
+    retry_interval: 3
+    receipt_wait_time: 30
+    sent_transaction_count_limit: 200
+  base-sepolia:
+    rps: 20
+    rpc_endpoint: "https://sepolia.base.org"
+    token_type: "erc20"
+    token_address: "0x0000000000000000000000000000000000000002"
+    gas_limit: 4294967
+    gas_price: 0
+    chain_id: 84532
+    account:
+      address: ""
+      private_key_file: "/app/config/blockchain_privkey.txt"
+    contracts:
+      benefit_address: "0x0000000000000000000000000000000000000001"
     max_retries: 3
     retry_interval: 3
     receipt_wait_time: 30

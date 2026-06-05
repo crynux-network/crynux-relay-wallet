@@ -262,6 +262,7 @@ blockchains:
   %s:
     rps: 100
     rpc_endpoint: %s
+    token_type: native
     gas_limit: 21000
     gas_price: 1
     chain_id: 42161
@@ -269,7 +270,7 @@ blockchains:
       address: %s
       private_key_file: %s
     contracts:
-      benefit_address: 0x0000000000000000000000000000000000000000
+      benefit_address: "0x0000000000000000000000000000000000000000"
     max_retries: 1
     retry_interval: 1
     receipt_wait_time: 30

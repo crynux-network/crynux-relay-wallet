@@ -50,10 +50,17 @@ func TestInitConfigLoadsAndDeletesMultiplePrivateKeyFiles(t *testing.T) {
 environment: debug
 blockchains:
   network_a:
+    token_type: native
+    contracts:
+      benefit_address: "0x0000000000000000000000000000000000000001"
     account:
       address: %s
       private_key_file: %s
   network_b:
+    token_type: erc20
+    token_address: "0x0000000000000000000000000000000000000002"
+    contracts:
+      benefit_address: "0x0000000000000000000000000000000000000003"
     account:
       address: %s
       private_key_file: %s
@@ -97,10 +104,16 @@ func TestInitConfigLoadsSharedBlockchainPrivateKeyFileOnce(t *testing.T) {
 environment: debug
 blockchains:
   network_a:
+    token_type: native
+    contracts:
+      benefit_address: "0x0000000000000000000000000000000000000001"
     account:
       address: %s
       private_key_file: %s
   network_b:
+    token_type: native
+    contracts:
+      benefit_address: "0x0000000000000000000000000000000000000002"
     account:
       address: %s
       private_key_file: %s
@@ -139,6 +152,9 @@ func TestInitConfigReturnsErrorWhenPrivateKeyFileMissing(t *testing.T) {
 environment: debug
 blockchains:
   network_a:
+    token_type: native
+    contracts:
+      benefit_address: "0x0000000000000000000000000000000000000001"
     account:
       address: %s
       private_key_file: %s
