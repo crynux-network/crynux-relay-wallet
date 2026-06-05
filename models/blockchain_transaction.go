@@ -11,14 +11,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// TransactionStatus represents the status of a blockchain transaction
+// TransactionStatus represents the status of a blockchain transaction.
 type TransactionStatus uint8
 
 const (
-	TransactionStatusPending   TransactionStatus = iota // 待发送
-	TransactionStatusSent                               // 已发送
-	TransactionStatusConfirmed                          // 已确认
-	TransactionStatusFailed                             // 失败
+	TransactionStatusPending TransactionStatus = iota
+	TransactionStatusSent
+	TransactionStatusConfirmed
+	TransactionStatusFailed
+	TransactionStatusSending
+	TransactionStatusCancelled
 )
 
 // BlockchainTransaction represents a blockchain transaction that needs to be sent
@@ -147,6 +149,80 @@ func (tx *BlockchainTransaction) MarkSent(ctx context.Context, db *gorm.DB, txHa
 	}
 
 	return tx.Update(ctx, db, updates)
+}
+
+func (tx *BlockchainTransaction) ClaimForSending(ctx context.Context, db *gorm.DB) (bool, error) {
+	if tx.ID == 0 {
+		return false, gorm.ErrRecordNotFound
+	}
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	result := db.WithContext(dbCtx).Model(&BlockchainTransaction{}).
+		Where("id = ? AND status = ? AND tx_hash IS NULL", tx.ID, TransactionStatusPending).
+		Updates(map[string]interface{}{
+			"status": TransactionStatusSending,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return false, nil
+	}
+	tx.Status = TransactionStatusSending
+	return true, nil
+}
+
+func (tx *BlockchainTransaction) ReleaseSending(ctx context.Context, db *gorm.DB, errorMsg string) error {
+	if tx.ID == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	updates := map[string]interface{}{
+		"status": TransactionStatusPending,
+	}
+	if errorMsg != "" {
+		updates["status_message"] = errorMsg
+	}
+	result := db.WithContext(dbCtx).Model(&BlockchainTransaction{}).
+		Where("id = ? AND status = ? AND tx_hash IS NULL", tx.ID, TransactionStatusSending).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		tx.Status = TransactionStatusPending
+	}
+	return nil
+}
+
+func (tx *BlockchainTransaction) CancelUnbroadcasted(ctx context.Context, db *gorm.DB, reason string) (bool, error) {
+	if tx.ID == 0 {
+		return false, gorm.ErrRecordNotFound
+	}
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	updates := map[string]interface{}{
+		"status":         TransactionStatusCancelled,
+		"failed_at":      time.Now(),
+		"status_message": reason,
+	}
+	result := db.WithContext(dbCtx).Model(&BlockchainTransaction{}).
+		Where("id = ? AND status = ? AND tx_hash IS NULL", tx.ID, TransactionStatusPending).
+		Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return false, nil
+	}
+	tx.Status = TransactionStatusCancelled
+	tx.FailedAt = sql.NullTime{Time: updates["failed_at"].(time.Time), Valid: true}
+	tx.StatusMessage = sql.NullString{String: reason, Valid: true}
+	return true, nil
 }
 
 func (tx *BlockchainTransaction) MarkConfirmed(ctx context.Context, db *gorm.DB, blockNumber, gasUsed int64, effectiveGasPrice string) error {

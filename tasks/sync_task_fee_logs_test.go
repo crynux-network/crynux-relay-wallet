@@ -264,7 +264,9 @@ blockchains:
     rpc_endpoint: %s
     token_type: native
     gas_limit: 21000
-    gas_price: 1
+    gas_limit_buffer_percent: 20
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 1000000000
     chain_id: 42161
     account:
       address: %s

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 func TestGetTransactionTransferReadsRawCustomTypeFields(t *testing.T) {
@@ -95,5 +96,75 @@ func TestBuildCallMsgFromTransactionUsesDatabaseFields(t *testing.T) {
 	}
 	if string(msg.Data) != string([]byte{0x12, 0x34}) {
 		t.Fatalf("expected data 0x1234, got %x", msg.Data)
+	}
+}
+
+func TestAddGasLimitBuffer(t *testing.T) {
+	gasLimit, err := addGasLimitBuffer(21000, 20)
+	if err != nil {
+		t.Fatalf("addGasLimitBuffer failed: %v", err)
+	}
+	if gasLimit != 25200 {
+		t.Fatalf("expected gas limit 25200, got %d", gasLimit)
+	}
+}
+
+func TestBuildDynamicFeeTransactionUsesType2FeeCaps(t *testing.T) {
+	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	chainID := big.NewInt(8453)
+	gasFeeCap := big.NewInt(100)
+	gasTipCap := big.NewInt(2)
+
+	tx, err := buildDynamicFeeTransaction(&models.BlockchainTransaction{
+		ToAddress: to.Hex(),
+		Value:     "42",
+		Data:      sql.NullString{String: "0x1234", Valid: true},
+	}, 7, 25200, gasFeeCap, gasTipCap, chainID)
+	if err != nil {
+		t.Fatalf("buildDynamicFeeTransaction failed: %v", err)
+	}
+	if tx.Type() != types.DynamicFeeTxType {
+		t.Fatalf("expected dynamic fee transaction type, got %d", tx.Type())
+	}
+	if tx.ChainId().Cmp(chainID) != 0 {
+		t.Fatalf("expected chain ID %s, got %s", chainID.String(), tx.ChainId().String())
+	}
+	if tx.Nonce() != 7 {
+		t.Fatalf("expected nonce 7, got %d", tx.Nonce())
+	}
+	if tx.Gas() != 25200 {
+		t.Fatalf("expected gas 25200, got %d", tx.Gas())
+	}
+	if tx.GasFeeCap().Cmp(gasFeeCap) != 0 {
+		t.Fatalf("expected fee cap %s, got %s", gasFeeCap.String(), tx.GasFeeCap().String())
+	}
+	if tx.GasTipCap().Cmp(gasTipCap) != 0 {
+		t.Fatalf("expected tip cap %s, got %s", gasTipCap.String(), tx.GasTipCap().String())
+	}
+	if tx.To() == nil || *tx.To() != to {
+		t.Fatalf("expected to %s, got %v", to.Hex(), tx.To())
+	}
+	if tx.Value().Cmp(big.NewInt(42)) != 0 {
+		t.Fatalf("expected value 42, got %s", tx.Value().String())
+	}
+	if string(tx.Data()) != string([]byte{0x12, 0x34}) {
+		t.Fatalf("expected data 0x1234, got %x", tx.Data())
+	}
+}
+
+func TestValidateDynamicFeeCapsRejectsExceededCaps(t *testing.T) {
+	err := validateDynamicFeeCaps(big.NewInt(101), big.NewInt(2), big.NewInt(100), big.NewInt(2))
+	if err == nil {
+		t.Fatalf("expected max fee cap error")
+	}
+
+	err = validateDynamicFeeCaps(big.NewInt(100), big.NewInt(3), big.NewInt(100), big.NewInt(2))
+	if err == nil {
+		t.Fatalf("expected max priority fee cap error")
+	}
+
+	err = validateDynamicFeeCaps(big.NewInt(101), big.NewInt(3), nil, nil)
+	if err != nil {
+		t.Fatalf("expected nil caps to allow dynamic fee values, got %v", err)
 	}
 }

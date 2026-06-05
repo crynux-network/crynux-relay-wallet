@@ -62,18 +62,51 @@ Serial withdrawal processing solves the wallet-local balance race where multiple
 
 For the active unfinished local record:
 
-1. If no blockchain transaction is attached, queue send transaction (`QueueSendETH`) and store `blockchain_transaction_id`.
-2. Poll transaction status until terminal (`confirmed` or `failed`) or context cancellation.
-3. If confirmed:
+1. If no blockchain transaction is attached, build the unsigned transaction payload for the target network.
+2. Persist a `pending` blockchain transaction and store `blockchain_transaction_id` in the same database transaction. The wallet MUST persist this local transaction before any fee estimation, signing, or broadcast attempt.
+3. The blockchain transaction sender atomically claims the persisted `pending` row by changing it to `sending`, estimates gas and fee caps, signs the transaction, broadcasts it, and marks it `sent` with `tx_hash` and `nonce` only after `eth_sendRawTransaction` succeeds.
+4. Poll transaction status until terminal (`confirmed`, `failed`, or `cancelled`) or context cancellation.
+5. If confirmed:
    - Load local relay account by record address.
    - Verify local balance is sufficient for `amount + withdrawal_fee`.
    - Decrease local balance by `amount + withdrawal_fee`.
    - Update record status to `success` in the same transaction.
-4. If failed and retries are exhausted, update record status to `failed`.
-5. After leaving pending loop:
+6. If failed and retries are exhausted, or if cancelled before broadcast, update record status to `failed`.
+7. After leaving pending loop:
    - If status is `success`, call Relay `FulfillWithdrawalRequest` with tx hash.
    - Otherwise call Relay `RejectWithdrawalRequest`.
-6. Set local record status to `finished`.
+8. Set local record status to `finished`.
+
+## Dynamic Fee Estimation and Sending
+
+Withdrawal blockchain transactions on EVM-compatible networks SHALL use EIP-1559 dynamic fee transactions (`DynamicFeeTx`). The wallet does not use a configured legacy `gas_price` for withdrawal execution.
+
+The blockchain configuration fields for withdrawal gas control are:
+
+- `gas_limit`: maximum allowed gas limit after estimation and buffer.
+- `gas_limit_buffer_percent`: required non-zero percentage buffer added to `eth_estimateGas` before comparing with `gas_limit` and sending the transaction.
+- `max_fee_per_gas`: maximum allowed EIP-1559 `maxFeePerGas` in wei. A value of `0` means no wallet-side cap.
+- `max_priority_fee_per_gas`: maximum allowed EIP-1559 `maxPriorityFeePerGas` in wei. A value of `0` means no wallet-side cap.
+
+The sender MUST estimate dynamic fee transaction parameters against the target network after it claims a pending blockchain transaction:
+
+1. Build the transaction call message from the pending withdrawal payload.
+2. Call `eth_estimateGas`.
+3. Add the configured gas limit buffer to the estimate.
+4. Fail sending if the buffered gas limit exceeds configured `gas_limit`.
+5. Read the latest block base fee.
+6. Read the suggested priority fee.
+7. Compute `maxFeePerGas = latestBaseFee * 2 + suggestedPriorityFee`.
+8. Fail sending if `maxFeePerGas` exceeds configured `max_fee_per_gas` when that cap is non-zero.
+9. Fail sending if `suggestedPriorityFee` exceeds configured `max_priority_fee_per_gas` when that cap is non-zero.
+
+Blockchain transaction persistence is a local queueing step, not proof of network submission. If estimation fails or exceeds configured caps before broadcast, the sender MUST release the transaction back to `pending` without `tx_hash`, and the transaction remains eligible for a later send attempt.
+
+The sender MUST use the persisted transaction state as the concurrency boundary. It MUST atomically change an unbroadcasted `pending` transaction to `sending` before gas estimation, signing, or broadcasting. A timeout handler MUST NOT cancel a transaction in `sending`. If sending fails before successful broadcast, the sender MUST return the transaction to `pending`. A transaction becomes `sent` only after broadcast succeeds and the wallet records the returned transaction hash and nonce.
+
+This design deliberately keeps withdrawal execution globally serial. A withdrawal record delayed by dynamic fee caps blocks later withdrawal records, including records for other networks, until it succeeds or reaches timeout. If timeout occurs while its blockchain transaction is still unbroadcasted and cancellable, the wallet MUST cancel that transaction before rejecting the Relay withdrawal.
+
+The wallet does not separately estimate or cap rollup parent-chain data fees through chain-specific fee oracle contracts. For supported EVM rollups, fee control is limited to standard gas estimation, buffered `gas_limit`, and EIP-1559 fee caps. Arbitrum Nitro-style gas estimates include the parent-chain posting buffer in the returned gas estimate. Base-style L1 security fee estimation is not a separate requirement in this wallet.
 
 ## Timeout Handling
 
@@ -83,9 +116,10 @@ Each record processing attempt SHALL run with a per-record deadline:
 
 If deadline is exceeded:
 
-- Call Relay `RejectWithdrawalRequest`.
-- Set local status to `finished`.
-- Return timeout error for alerting path.
+- If no blockchain transaction is attached, call Relay `RejectWithdrawalRequest` and set local status to `finished`.
+- If the current blockchain transaction is `pending` and has no `tx_hash`, atomically change it to `cancelled`, call Relay `RejectWithdrawalRequest`, and set local status to `finished`.
+- If the current blockchain transaction is already `cancelled`, call Relay `RejectWithdrawalRequest` and set local status to `finished`.
+- If the current blockchain transaction is `sending`, `sent`, or otherwise not cancellable, do not reject the Relay withdrawal. Return timeout error for the alerting path.
 
 ## Balance Ownership Rule
 

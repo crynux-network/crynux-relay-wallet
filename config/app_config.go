@@ -37,14 +37,16 @@ type AppConfig struct {
 	} `mapstructure:"log"`
 
 	Blockchains map[string]struct {
-		RPS          uint64 `mapstructure:"rps"`
-		RpcEndpoint  string `mapstructure:"rpc_endpoint"`
-		TokenType    string `mapstructure:"token_type"`
-		TokenAddress string `mapstructure:"token_address"`
-		GasLimit     uint64 `mapstructure:"gas_limit"`
-		GasPrice     uint64 `mapstructure:"gas_price"`
-		ChainID      uint64 `mapstructure:"chain_id"`
-		Account      struct {
+		RPS                   uint64 `mapstructure:"rps"`
+		RpcEndpoint           string `mapstructure:"rpc_endpoint"`
+		TokenType             string `mapstructure:"token_type"`
+		TokenAddress          string `mapstructure:"token_address"`
+		GasLimit              uint64 `mapstructure:"gas_limit"`
+		GasLimitBufferPercent uint64 `mapstructure:"gas_limit_buffer_percent"`
+		MaxFeePerGas          uint64 `mapstructure:"max_fee_per_gas"`
+		MaxPriorityFeePerGas  uint64 `mapstructure:"max_priority_fee_per_gas"`
+		ChainID               uint64 `mapstructure:"chain_id"`
+		Account               struct {
 			Address        string `mapstructure:"address"`
 			PrivateKey     string `mapstructure:"private_key"`
 			PrivateKeyFile string `mapstructure:"private_key_file"`

@@ -68,7 +68,7 @@ func InitConfig(configPath string) error {
 
 func checkBlockchainAccount() error {
 
-	for _, blockchain := range appConfig.Blockchains {
+	for network, blockchain := range appConfig.Blockchains {
 		switch blockchain.TokenType {
 		case TokenTypeNative:
 			if blockchain.TokenAddress != "" {
@@ -83,6 +83,9 @@ func checkBlockchainAccount() error {
 		}
 		if !common.IsHexAddress(blockchain.Contracts.BenefitAddress) {
 			return errors.New("blockchain benefit address contract is invalid")
+		}
+		if blockchain.GasLimitBufferPercent == 0 {
+			return fmt.Errorf("blockchain %s gas limit buffer percent not set", network)
 		}
 		if blockchain.Account.PrivateKey == "" {
 			return errors.New("blockchain account private key not set")

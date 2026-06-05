@@ -18,51 +18,39 @@ log:
   heartbeat_log_file: "/app/data/logs/heartbeat.log"
   alert_log_file: "/app/data/logs/alert.log"
 blockchains:
-  dymension:
-    rps: 20
-    rpc_endpoint: "https://json-rpc.testnet-dym.crynux.io"
-    token_type: "native"
-    gas_limit: 4294967
-    gas_price: 0
-    chain_id: 1313161573
-    account:
-      address: ""
-      private_key_file: "/app/config/blockchain_privkey.txt"
-    contracts:
-      benefit_address: "0xa4AC846337794C93d68D387Be77663e32AD415bb"
-    max_retries: 3
-    retry_interval: 3
-    receipt_wait_time: 30
-    sent_transaction_count_limit: 200
-  near:
-    rps: 20
-    rpc_endpoint: "https://json-rpc.testnet-near.crynux.io"
-    token_type: "native"
-    gas_limit: 4294967
-    gas_price: 0
-    chain_id: 1313161574
-    account:
-      address: ""
-      private_key_file: "/app/config/blockchain_privkey.txt"
-    contracts:
-      benefit_address: "0xf57a8f8F7ab52EBD7971A65e9B44C767d3119c4f"
-    max_retries: 3
-    retry_interval: 3
-    receipt_wait_time: 30
-    sent_transaction_count_limit: 200
   base-sepolia:
     rps: 20
     rpc_endpoint: "https://sepolia.base.org"
     token_type: "erc20"
     token_address: "0x0000000000000000000000000000000000000002"
-    gas_limit: 4294967
-    gas_price: 0
+    gas_limit: 200000
+    gas_limit_buffer_percent: 20
+    max_fee_per_gas: 1000000000
+    max_priority_fee_per_gas: 10000000
     chain_id: 84532
     account:
       address: ""
       private_key_file: "/app/config/blockchain_privkey.txt"
     contracts:
       benefit_address: "0x0000000000000000000000000000000000000001"
+    max_retries: 3
+    retry_interval: 3
+    receipt_wait_time: 30
+    sent_transaction_count_limit: 200
+  crynux-on-base-sepolia:
+    rps: 20
+    rpc_endpoint: "https://json-rpc.base-sepolia.crynux.io"
+    token_type: "native"
+    gas_limit: 100000
+    gas_limit_buffer_percent: 20
+    max_fee_per_gas: 3000000000
+    max_priority_fee_per_gas: 1000000
+    chain_id: 188962142
+    account:
+      address: ""
+      private_key_file: "/app/config/blockchain_privkey.txt"
+    contracts:
+      benefit_address: "0xFc80e019d00f0d06CbebdE648990A89c5a25B425"
     max_retries: 3
     retry_interval: 3
     receipt_wait_time: 30
