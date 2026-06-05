@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +49,16 @@ var blockchainClients = make(map[string]*BlockchainClient)
 var pattern *regexp.Regexp = regexp.MustCompile(`[Nn]once`)
 
 var ErrBlockchainNotFound = errors.New("blockchain not found")
+
+var erc20ABI = mustParseERC20ABI()
+
+func mustParseERC20ABI() abi.ABI {
+	parsed, err := abi.JSON(strings.NewReader(`[{"constant":true,"inputs":[{"name":"account","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"},{"constant":false,"inputs":[{"name":"recipient","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"}]`))
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
 
 type TransactionTransfer struct {
 	Hash  common.Hash
@@ -217,6 +228,37 @@ func (client *BlockchainClient) BalanceAt(ctx context.Context, address common.Ad
 	return client.RpcClient.BalanceAt(callCtx, address, nil)
 }
 
+func (client *BlockchainClient) TokenBalanceAt(ctx context.Context, tokenAddress common.Address, address common.Address) (*big.Int, error) {
+	data, err := erc20ABI.Pack("balanceOf", address)
+	if err != nil {
+		return nil, err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := client.Limiter.Wait(callCtx); err != nil {
+		return nil, err
+	}
+	result, err := client.RpcClient.CallContract(callCtx, ethereum.CallMsg{
+		To:   &tokenAddress,
+		Data: data,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	values, err := erc20ABI.Unpack("balanceOf", result)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != 1 {
+		return nil, errors.New("invalid balanceOf result")
+	}
+	balance, ok := values[0].(*big.Int)
+	if !ok {
+		return nil, errors.New("invalid balanceOf value")
+	}
+	return balance, nil
+}
+
 func (client *BlockchainClient) GetAuth(ctx context.Context) (*bind.TransactOpts, error) {
 	privateKey, err := crypto.HexToECDSA(client.PrivateKey)
 	if err != nil {
@@ -373,6 +415,38 @@ func QueueSendETH(ctx context.Context, db *gorm.DB, to common.Address, amount *b
 		ToAddress:   to.Hex(),
 		Value:       amount.String(),
 		MaxRetries:  blockchain.MaxRetries,
+	}
+
+	if err := transaction.Save(ctx, db); err != nil {
+		return nil, err
+	}
+
+	return transaction, nil
+}
+
+func QueueSendERC20(ctx context.Context, db *gorm.DB, tokenAddress common.Address, to common.Address, amount *big.Int, network string) (*models.BlockchainTransaction, error) {
+	appConfig := config.GetConfig()
+	blockchain, ok := appConfig.Blockchains[network]
+	if !ok {
+		return nil, ErrBlockchainNotFound
+	}
+	data, err := erc20ABI.Pack("transfer", to, amount)
+	if err != nil {
+		return nil, err
+	}
+
+	transaction := &models.BlockchainTransaction{
+		Network:     network,
+		Type:        "ERC20::transfer",
+		Status:      models.TransactionStatusPending,
+		FromAddress: blockchain.Account.Address,
+		ToAddress:   tokenAddress.Hex(),
+		Value:       "0",
+		Data: sql.NullString{
+			String: hexutil.Encode(data),
+			Valid:  true,
+		},
+		MaxRetries: blockchain.MaxRetries,
 	}
 
 	if err := transaction.Save(ctx, db); err != nil {

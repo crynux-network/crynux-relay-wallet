@@ -62,6 +62,12 @@ type depositPayload struct {
 	Network string `json:"network"`
 }
 
+var erc20TransferTopic = crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
+
+func addressTopic(address string) common.Hash {
+	return common.BytesToHash(common.HexToAddress(address).Bytes())
+}
+
 type vestingPayload struct {
 	VestingID      uint   `json:"vesting_id"`
 	Address        string `json:"address"`
@@ -213,9 +219,24 @@ func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) erro
 		return ErrTaskFeeDepositTxMismatch
 	}
 
+	blockchainConfig, ok := config.GetConfig().Blockchains[payload.Network]
+	if !ok {
+		return blockchain.ErrBlockchainNotFound
+	}
+	switch blockchainConfig.TokenType {
+	case config.TokenTypeNative:
+		return validateNativeDepositLog(ctx, client, receipt, txHash, eventLog, amount)
+	case config.TokenTypeERC20:
+		return validateERC20DepositLog(ctx, client, receipt, txHash, eventLog, amount, blockchainConfig.TokenAddress)
+	default:
+		return blockchain.ErrBlockchainNotFound
+	}
+}
+
+func validateNativeDepositLog(ctx context.Context, client *blockchain.BlockchainClient, receipt *types.Receipt, txHash common.Hash, eventLog relay_api.TaskFeeLog, amount *big.Int) error {
 	transfer, err := client.GetTransactionTransfer(ctx, txHash)
 	if errors.Is(err, ethereum.NotFound) {
-		return fmt.Errorf("deposit transaction not found: %s", payload.TxHash)
+		return fmt.Errorf("deposit transaction not found: %s", txHash.Hex())
 	}
 	if err != nil {
 		return err
@@ -243,6 +264,48 @@ func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) erro
 	}
 
 	return nil
+}
+
+func validateERC20DepositLog(ctx context.Context, client *blockchain.BlockchainClient, receipt *types.Receipt, txHash common.Hash, eventLog relay_api.TaskFeeLog, amount *big.Int, tokenAddress string) error {
+	transfer, err := client.GetTransactionTransfer(ctx, txHash)
+	if errors.Is(err, ethereum.NotFound) {
+		return fmt.Errorf("deposit transaction not found: %s", txHash.Hex())
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(transfer.From.Hex(), eventLog.Address) {
+		return ErrTaskFeeDepositTxMismatch
+	}
+	for _, receiptLog := range receipt.Logs {
+		if len(receiptLog.Topics) != 3 ||
+			receiptLog.Topics[0] != erc20TransferTopic ||
+			!strings.EqualFold(receiptLog.Address.Hex(), tokenAddress) ||
+			receiptLog.Topics[2] != addressTopic(config.GetConfig().Relay.DepositAddress) ||
+			len(receiptLog.Data) != 32 {
+			continue
+		}
+		if !strings.EqualFold(common.BytesToAddress(receiptLog.Topics[1].Bytes()).Hex(), eventLog.Address) {
+			continue
+		}
+		logAmount := new(big.Int).SetBytes(receiptLog.Data)
+		if logAmount.Cmp(amount) != 0 {
+			continue
+		}
+		if receipt.BlockNumber == nil {
+			return ErrTaskFeeDepositTxMismatch
+		}
+		header, err := client.RpcClient.HeaderByNumber(ctx, receipt.BlockNumber)
+		if err != nil {
+			return err
+		}
+		maxAgeSeconds := config.GetConfig().Tasks.SyncTaskFeeLogs.DepositMaxAgeSeconds
+		if header.Time+maxAgeSeconds < uint64(time.Now().Unix()) {
+			return ErrTaskFeeDepositTxTooOld
+		}
+		return nil
+	}
+	return ErrTaskFeeDepositTxMismatch
 }
 
 func parseVestingPayload(eventLog relay_api.TaskFeeLog) (*vestingPayload, error) {

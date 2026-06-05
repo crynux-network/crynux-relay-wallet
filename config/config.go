@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/spf13/viper"
 )
@@ -68,6 +69,21 @@ func InitConfig(configPath string) error {
 func checkBlockchainAccount() error {
 
 	for _, blockchain := range appConfig.Blockchains {
+		switch blockchain.TokenType {
+		case TokenTypeNative:
+			if blockchain.TokenAddress != "" {
+				return errors.New("native blockchain token address must be empty")
+			}
+		case TokenTypeERC20:
+			if !common.IsHexAddress(blockchain.TokenAddress) {
+				return errors.New("erc20 blockchain token address is invalid")
+			}
+		default:
+			return errors.New("blockchain token type is invalid")
+		}
+		if !common.IsHexAddress(blockchain.Contracts.BenefitAddress) {
+			return errors.New("blockchain benefit address contract is invalid")
+		}
 		if blockchain.Account.PrivateKey == "" {
 			return errors.New("blockchain account private key not set")
 		}

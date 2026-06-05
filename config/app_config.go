@@ -6,6 +6,11 @@ const (
 	EnvTest       = "test"
 )
 
+const (
+	TokenTypeNative = "native"
+	TokenTypeERC20  = "erc20"
+)
+
 type AppConfig struct {
 	Environment string `mapstructure:"environment"`
 
@@ -32,12 +37,14 @@ type AppConfig struct {
 	} `mapstructure:"log"`
 
 	Blockchains map[string]struct {
-		RPS         uint64 `mapstructure:"rps"`
-		RpcEndpoint string `mapstructure:"rpc_endpoint"`
-		GasLimit    uint64 `mapstructure:"gas_limit"`
-		GasPrice    uint64 `mapstructure:"gas_price"`
-		ChainID     uint64 `mapstructure:"chain_id"`
-		Account     struct {
+		RPS          uint64 `mapstructure:"rps"`
+		RpcEndpoint  string `mapstructure:"rpc_endpoint"`
+		TokenType    string `mapstructure:"token_type"`
+		TokenAddress string `mapstructure:"token_address"`
+		GasLimit     uint64 `mapstructure:"gas_limit"`
+		GasPrice     uint64 `mapstructure:"gas_price"`
+		ChainID      uint64 `mapstructure:"chain_id"`
+		Account      struct {
 			Address        string `mapstructure:"address"`
 			PrivateKey     string `mapstructure:"private_key"`
 			PrivateKeyFile string `mapstructure:"private_key_file"`
