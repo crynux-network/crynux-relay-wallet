@@ -15,6 +15,12 @@ const (
 	VestingStatusCompleted
 )
 
+const (
+	VestingTypeNode       = "node"
+	VestingTypeDelegation = "delegation"
+	VestingTypeOther      = "other"
+)
+
 type VestingRecord struct {
 	gorm.Model
 	RelayVestingID uint          `json:"relay_vesting_id" gorm:"not null;uniqueIndex"`
@@ -23,6 +29,7 @@ type VestingRecord struct {
 	ReleasedAmount BigInt        `json:"released_amount" gorm:"not null"`
 	StartTime      time.Time     `json:"start_time" gorm:"not null;index"`
 	DurationDays   uint          `json:"duration_days" gorm:"not null"`
+	Type           string        `json:"type" gorm:"not null;size:32;default:other;index"`
 	Source         string        `json:"source" gorm:"not null;size:64;index"`
 	ExternalID     string        `json:"external_id" gorm:"not null;size:128;index"`
 	AdminSignature string        `json:"admin_signature" gorm:"not null;size:255"`
@@ -34,17 +41,19 @@ type VestingSignPayload struct {
 	TotalAmount  string `json:"total_amount"`
 	StartTime    int64  `json:"start_time"`
 	DurationDays uint   `json:"duration_days"`
+	Type         string `json:"type"`
 	Source       string `json:"source"`
 	ExternalID   string `json:"external_id"`
 }
 
 func BuildVestingSignMessage(payload VestingSignPayload) string {
 	return fmt.Sprintf(
-		"Crynux Relay Vesting\nAddress: %s\nTotalAmount: %s\nStartTime: %d\nDurationDays: %d\nSource: %s\nExternalID: %s",
+		"Crynux Relay Vesting\nAddress: %s\nTotalAmount: %s\nStartTime: %d\nDurationDays: %d\nType: %s\nSource: %s\nExternalID: %s",
 		payload.Address,
 		payload.TotalAmount,
 		payload.StartTime,
 		payload.DurationDays,
+		payload.Type,
 		payload.Source,
 		payload.ExternalID,
 	)
