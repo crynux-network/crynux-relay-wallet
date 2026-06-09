@@ -2,9 +2,26 @@ package models
 
 import (
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestBuildVestingSignMessageIncludesType(t *testing.T) {
+	message := BuildVestingSignMessage(VestingSignPayload{
+		Address:      "0x1111111111111111111111111111111111111111",
+		TotalAmount:  "1000",
+		StartTime:    1767225600,
+		DurationDays: 30,
+		Type:         VestingTypeNode,
+		Source:       "emission",
+		ExternalID:   "batch-1",
+	})
+
+	if !strings.Contains(message, "\nType: node\n") {
+		t.Fatalf("expected vesting sign message to include type, got %q", message)
+	}
+}
 
 func TestComputeVestingShouldReleased(t *testing.T) {
 	total := big.NewInt(0).SetUint64(1000)

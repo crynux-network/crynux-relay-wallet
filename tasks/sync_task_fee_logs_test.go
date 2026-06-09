@@ -148,6 +148,29 @@ func TestParseVestingReleasePayloadRejectsMissingVestingID(t *testing.T) {
 	}
 }
 
+func TestParseVestingPayloadRequiresValidType(t *testing.T) {
+	validPayload := `{"vesting_id":42,"address":"0x1111111111111111111111111111111111111111","total_amount":"1000","released_amount":"0","start_time":1767225600,"duration_days":30,"type":"delegation","source":"emission","external_id":"batch-1","admin_signature":"0xabc"}`
+	payload, err := parseVestingPayload(relay_api.TaskFeeLog{Payload: validPayload})
+	if err != nil {
+		t.Fatalf("parseVestingPayload failed: %v", err)
+	}
+	if payload.Type != models.VestingTypeDelegation {
+		t.Fatalf("expected delegation type, got %s", payload.Type)
+	}
+
+	missingTypePayload := `{"vesting_id":42,"address":"0x1111111111111111111111111111111111111111","total_amount":"1000","released_amount":"0","start_time":1767225600,"duration_days":30,"source":"emission","external_id":"batch-1","admin_signature":"0xabc"}`
+	_, err = parseVestingPayload(relay_api.TaskFeeLog{Payload: missingTypePayload})
+	if !errors.Is(err, ErrTaskFeeVestingPayloadInvalid) {
+		t.Fatalf("expected missing type to fail with ErrTaskFeeVestingPayloadInvalid, got %v", err)
+	}
+
+	invalidTypePayload := `{"vesting_id":42,"address":"0x1111111111111111111111111111111111111111","total_amount":"1000","released_amount":"0","start_time":1767225600,"duration_days":30,"type":"delegator","source":"emission","external_id":"batch-1","admin_signature":"0xabc"}`
+	_, err = parseVestingPayload(relay_api.TaskFeeLog{Payload: invalidTypePayload})
+	if !errors.Is(err, ErrTaskFeeVestingPayloadInvalid) {
+		t.Fatalf("expected invalid type to fail with ErrTaskFeeVestingPayloadInvalid, got %v", err)
+	}
+}
+
 type depositRPCState struct {
 	txHash        common.Hash
 	from          common.Address

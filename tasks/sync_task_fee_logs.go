@@ -75,6 +75,7 @@ type vestingPayload struct {
 	ReleasedAmount string `json:"released_amount"`
 	StartTime      int64  `json:"start_time"`
 	DurationDays   uint   `json:"duration_days"`
+	Type           string `json:"type"`
 	Source         string `json:"source"`
 	ExternalID     string `json:"external_id"`
 	AdminSignature string `json:"admin_signature"`
@@ -131,6 +132,15 @@ func isBalanceIgnoredTaskFeeLogType(logType relay_api.TaskFeeLogType) bool {
 	return logType == relay_api.TaskFeeLogTypeWithdraw ||
 		logType == relay_api.TaskFeeLogTypeWithdrawRefund ||
 		logType == relay_api.TaskFeeLogTypeVestingCreated
+}
+
+func isValidVestingType(vestingType string) bool {
+	switch vestingType {
+	case models.VestingTypeNode, models.VestingTypeDelegation, models.VestingTypeOther:
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeTaskFeeLogs(logs []relay_api.TaskFeeLog) (map[string]*big.Int, error) {
@@ -322,12 +332,16 @@ func parseVestingPayload(eventLog relay_api.TaskFeeLog) (*vestingPayload, error)
 		payload.ReleasedAmount == "" ||
 		payload.StartTime <= 0 ||
 		payload.DurationDays == 0 ||
+		payload.Type == "" ||
 		payload.Source == "" ||
 		payload.ExternalID == "" ||
 		payload.AdminSignature == "" {
 		return nil, ErrTaskFeeVestingPayloadInvalid
 	}
 	if !common.IsHexAddress(payload.Address) {
+		return nil, ErrTaskFeeVestingPayloadInvalid
+	}
+	if !isValidVestingType(payload.Type) {
 		return nil, ErrTaskFeeVestingPayloadInvalid
 	}
 	return &payload, nil
@@ -365,6 +379,7 @@ func recoverVestingSigner(payload *vestingPayload) (string, error) {
 		TotalAmount:  payload.TotalAmount,
 		StartTime:    payload.StartTime,
 		DurationDays: payload.DurationDays,
+		Type:         payload.Type,
 		Source:       payload.Source,
 		ExternalID:   payload.ExternalID,
 	})
@@ -415,6 +430,7 @@ func upsertVestingCreateLog(ctx context.Context, tx *gorm.DB, eventLog relay_api
 			ReleasedAmount: models.BigInt{Int: *releasedAmount},
 			StartTime:      time.Unix(payload.StartTime, 0).UTC(),
 			DurationDays:   payload.DurationDays,
+			Type:           payload.Type,
 			Source:         payload.Source,
 			ExternalID:     payload.ExternalID,
 			AdminSignature: payload.AdminSignature,
@@ -430,6 +446,7 @@ func upsertVestingCreateLog(ctx context.Context, tx *gorm.DB, eventLog relay_api
 		record.TotalAmount.String() != totalAmount.String() ||
 		record.StartTime.Unix() != payload.StartTime ||
 		record.DurationDays != payload.DurationDays ||
+		record.Type != payload.Type ||
 		record.Source != payload.Source ||
 		record.ExternalID != payload.ExternalID {
 		return ErrTaskFeeVestingPayloadInvalid
