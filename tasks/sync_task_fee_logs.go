@@ -559,7 +559,10 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 		}
 
 		if eventLog.Type == relay_api.TaskFeeLogTypeDeposit {
-			if err := validateDepositLog(ctx, eventLog); err != nil {
+			logDepositRequestReceived(eventLog)
+			err := validateDepositLog(ctx, eventLog)
+			logDepositValidationResult(eventLog, err)
+			if err != nil {
 				return err
 			}
 		} else if eventLog.Type == relay_api.TaskFeeLogTypeWithdrawalFeeIncome {
@@ -627,6 +630,50 @@ func checkTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFee
 	}
 
 	return nil
+}
+
+func depositLogFields(eventLog relay_api.TaskFeeLog) log.Fields {
+	fields := log.Fields{
+		"relay_account_event_id": eventLog.ID,
+		"address":                eventLog.Address,
+		"amount":                 eventLog.Amount,
+	}
+	payload, err := parseDepositPayload(eventLog)
+	if err != nil {
+		fields["payload_valid"] = false
+		return fields
+	}
+	network, txHash := normalizedDepositIdentity(payload)
+	fields["payload_valid"] = true
+	fields["network"] = network
+	fields["tx_hash"] = txHash
+	addBlockchainLogFields(fields, network)
+	return fields
+}
+
+func addBlockchainLogFields(fields log.Fields, network string) {
+	blockchainConfig, ok := config.GetConfig().Blockchains[network]
+	if !ok {
+		return
+	}
+	fields["token_type"] = blockchainConfig.TokenType
+	if blockchainConfig.TokenType == config.TokenTypeERC20 {
+		fields["token_address"] = blockchainConfig.TokenAddress
+	}
+}
+
+func logDepositRequestReceived(eventLog relay_api.TaskFeeLog) {
+	log.WithFields(depositLogFields(eventLog)).Info("Deposit request received")
+}
+
+func logDepositValidationResult(eventLog relay_api.TaskFeeLog, validationErr error) {
+	fields := depositLogFields(eventLog)
+	if validationErr != nil {
+		fields["error"] = validationErr.Error()
+		log.WithFields(fields).Info("Deposit validation failed")
+		return
+	}
+	log.WithFields(fields).Info("Deposit validation succeeded")
 }
 
 func processTaskFeeLogs(ctx context.Context, db *gorm.DB, logs []relay_api.TaskFeeLog) error {
@@ -749,6 +796,37 @@ func saveDepositRecords(ctx context.Context, db *gorm.DB, logs []relay_api.TaskF
 	return nil
 }
 
+func logDepositCredits(logs []relay_api.TaskFeeLog) {
+	depositRecords, err := buildDepositRecords(logs)
+	if err != nil {
+		log.Errorf("SyncTaskFeeLogs: failed to build deposit credit logs: %v", err)
+		return
+	}
+	for _, record := range depositRecords {
+		fields := log.Fields{
+			"relay_account_event_id": record.RelayAccountEventID,
+			"network":                record.Network,
+			"tx_hash":                record.TxHash,
+			"from_address":           record.FromAddress,
+			"deposit_address":        record.DepositAddress,
+			"amount":                 record.Amount.String(),
+		}
+		addBlockchainLogFields(fields, record.Network)
+		log.WithFields(fields).Info("Deposit credited")
+	}
+}
+
+func logDepositCreditFailures(logs []relay_api.TaskFeeLog, creditErr error) {
+	for _, eventLog := range logs {
+		if eventLog.Type != relay_api.TaskFeeLogTypeDeposit {
+			continue
+		}
+		fields := depositLogFields(eventLog)
+		fields["error"] = creditErr.Error()
+		log.WithFields(fields).Info("Deposit credit failed")
+	}
+}
+
 func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 	db := config.GetDB()
 
@@ -775,6 +853,7 @@ func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 		}
 
 		if err := checkTaskFeeLogs(ctx, db, logs); err != nil {
+			logDepositCreditFailures(logs, err)
 			return err
 		}
 
@@ -794,7 +873,9 @@ func syncTaskFeeLogs(ctx context.Context, intervalSeconds uint) error {
 			checkpoint.LatestTaskFeeLogTimestamp = logs[len(logs)-1].CreatedAt
 			return tx.Save(&checkpoint).Error
 		}); err != nil {
+			logDepositCreditFailures(logs, err)
 			return err
 		}
+		logDepositCredits(logs)
 	}
 }
