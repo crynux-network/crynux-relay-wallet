@@ -57,6 +57,92 @@ func withdrawalTotalAmount(amount, withdrawalFee *big.Int) *big.Int {
 	return big.NewInt(0).Add(amount, withdrawalFee)
 }
 
+func withdrawalRequestLogFields(request relay_api.WithdrawalRequest) log.Fields {
+	fields := log.Fields{
+		"remote_id":              request.ID,
+		"relay_account_event_id": request.RelayAccountEventID,
+		"address":                request.Address,
+		"benefit_address":        request.BenefitAddress,
+		"network":                request.Network,
+		"amount":                 request.Amount,
+		"withdrawal_fee":         request.WithdrawalFee,
+		"status":                 request.Status,
+		"created_at":             request.CreatedAt,
+	}
+	amount, amountErr := parseWithdrawalAmount(request.Amount)
+	withdrawalFee, feeErr := parseWithdrawalAmount(request.WithdrawalFee)
+	if amountErr == nil && feeErr == nil {
+		fields["total_debit"] = withdrawalTotalAmount(amount, withdrawalFee).String()
+	}
+	addBlockchainLogFields(fields, request.Network)
+	return fields
+}
+
+func withdrawalRecordLogFields(record *models.WithdrawRecord) log.Fields {
+	toAddress := record.BenefitAddress
+	if toAddress == "" {
+		toAddress = record.Address
+	}
+	fields := log.Fields{
+		"record_id":      record.ID,
+		"remote_id":      record.RemoteID,
+		"address":        record.Address,
+		"to_address":     toAddress,
+		"network":        record.Network,
+		"amount":         record.Amount.String(),
+		"withdrawal_fee": record.WithdrawalFee.String(),
+		"total_debit":    withdrawalTotalAmount(&record.Amount.Int, &record.WithdrawalFee.Int).String(),
+	}
+	addBlockchainLogFields(fields, record.Network)
+	return fields
+}
+
+func logWithdrawalRequestsReceived(requests []relay_api.WithdrawalRequest) {
+	for _, request := range requests {
+		log.WithFields(withdrawalRequestLogFields(request)).Info("Withdrawal request received")
+	}
+}
+
+func logWithdrawalValidationResults(requests []relay_api.WithdrawalRequest, validationErr error) {
+	for _, request := range requests {
+		fields := withdrawalRequestLogFields(request)
+		if validationErr != nil {
+			fields["error"] = validationErr.Error()
+			log.WithFields(fields).Info("Withdrawal validation failed")
+			continue
+		}
+		log.WithFields(fields).Info("Withdrawal validation succeeded")
+	}
+}
+
+func logWithdrawalRequestFailures(requests []relay_api.WithdrawalRequest, processErr error) {
+	for _, request := range requests {
+		fields := withdrawalRequestLogFields(request)
+		fields["error"] = processErr.Error()
+		log.WithFields(fields).Info("Withdrawal failed")
+	}
+}
+
+func logWithdrawalFulfilled(record *models.WithdrawRecord, blockchainTransaction *models.BlockchainTransaction) {
+	fields := withdrawalRecordLogFields(record)
+	if blockchainTransaction != nil {
+		fields["blockchain_transaction_id"] = blockchainTransaction.ID
+		fields["tx_hash"] = blockchainTransaction.TxHash.String
+	}
+	log.WithFields(fields).Info("Withdrawal fulfilled")
+}
+
+func logWithdrawalRecordFailed(record *models.WithdrawRecord, processErr error, blockchainTransaction *models.BlockchainTransaction) {
+	fields := withdrawalRecordLogFields(record)
+	fields["error"] = processErr.Error()
+	if blockchainTransaction != nil {
+		fields["blockchain_transaction_id"] = blockchainTransaction.ID
+		fields["tx_hash"] = blockchainTransaction.TxHash.String
+		fields["transaction_status"] = blockchainTransaction.Status
+	}
+	log.WithFields(fields).Info("Withdrawal failed")
+}
+
 func StartSyncWithdrawalRequests(ctx context.Context) error {
 	intervalSeconds := config.GetConfig().Tasks.SyncWithdrawalRequests.IntervalSeconds
 	interval := time.Duration(intervalSeconds) * time.Second
@@ -217,7 +303,12 @@ func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 			}
 		}
 
-		if err := checkWithdrawalRequests(ctx, db, requests); err != nil {
+		logWithdrawalRequestsReceived(requests)
+
+		err = checkWithdrawalRequests(ctx, db, requests)
+		logWithdrawalValidationResults(requests, err)
+		if err != nil {
+			logWithdrawalRequestFailures(requests, err)
 			return err
 		}
 
@@ -252,6 +343,7 @@ func syncWithdrawalRequests(ctx context.Context, intervalSeconds uint) error {
 			checkpoint.LatestWithdrawalRequestTimestamp = requests[len(requests)-1].CreatedAt
 			return tx.Save(&checkpoint).Error
 		}); err != nil {
+			logWithdrawalRequestFailures(requests, err)
 			return err
 		}
 	}
@@ -323,8 +415,9 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 		}
 
 		if blockchainTransaction.Status == models.TransactionStatusConfirmed {
+			totalAmount := withdrawalTotalAmount(&record.Amount.Int, &record.WithdrawalFee.Int)
+			remainingBalance := ""
 			err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) (err error) {
-				totalAmount := withdrawalTotalAmount(&record.Amount.Int, &record.WithdrawalFee.Int)
 				var account models.RelayAccount
 				err = tx.Model(&models.RelayAccount{}).Where("address = ?", record.Address).First(&account).Error
 				if err != nil {
@@ -334,6 +427,7 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 					return ErrWithdrawalRequestTaskFeeNotEnough
 				}
 				account.Balance.Sub(&account.Balance.Int, totalAmount)
+				remainingBalance = account.Balance.String()
 				err = tx.Save(&account).Error
 				if err != nil {
 					return err
@@ -347,6 +441,24 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 			if err != nil {
 				return err
 			}
+			toAddress := record.BenefitAddress
+			if toAddress == "" {
+				toAddress = record.Address
+			}
+			log.Infof(
+				"Withdrawal debited: record_id=%d remote_id=%d network=%s address=%s to_address=%s amount=%s withdrawal_fee=%s total_debit=%s remaining_balance=%s blockchain_transaction_id=%d tx_hash=%s",
+				record.ID,
+				record.RemoteID,
+				record.Network,
+				record.Address,
+				toAddress,
+				record.Amount.String(),
+				record.WithdrawalFee.String(),
+				totalAmount.String(),
+				remainingBalance,
+				blockchainTransaction.ID,
+				blockchainTransaction.TxHash.String,
+			)
 		} else if blockchainTransaction.Status == models.TransactionStatusCancelled {
 			err = record.UpdateStatus(ctx, db, models.WithdrawStatusFailed)
 			if err != nil {
@@ -365,16 +477,19 @@ func processWithdrawalRecord(ctx context.Context, db *gorm.DB, record *models.Wi
 		if err != nil {
 			return err
 		}
+		if err = record.UpdateStatus(ctx, db, models.WithdrawStatusFinished); err != nil {
+			return err
+		}
+		logWithdrawalFulfilled(record, blockchainTransaction)
 	} else {
 		err = relay_api.RejectWithdrawalRequest(ctx, record.RemoteID)
 		if err != nil {
 			return err
 		}
-	}
-
-	err = record.UpdateStatus(ctx, db, models.WithdrawStatusFinished)
-	if err != nil {
-		return err
+		if err = record.UpdateStatus(ctx, db, models.WithdrawStatusFinished); err != nil {
+			return err
+		}
+		logWithdrawalRecordFailed(record, fmt.Errorf("withdrawal request blockchain transaction ended with status %d", blockchainTransaction.Status), blockchainTransaction)
 	}
 	return nil
 }
@@ -431,6 +546,7 @@ func handleTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *mo
 				if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
 					return fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
 				}
+				logWithdrawalRecordFailed(record, ErrWithdrawalRequestTransactionUnconfirmedTimeout, blockchainTransaction)
 				log.Infof("ProcessWithdrawalRecords: rejected timeout withdrawal record %d after cancelling unbroadcasted blockchain transaction %d", record.ID, blockchainTransaction.ID)
 				return nil
 			}
@@ -439,6 +555,7 @@ func handleTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *mo
 			if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
 				return fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
 			}
+			logWithdrawalRecordFailed(record, ErrWithdrawalRequestTransactionUnconfirmedTimeout, blockchainTransaction)
 			log.Infof("ProcessWithdrawalRecords: rejected timeout withdrawal record %d with cancelled blockchain transaction %d", record.ID, blockchainTransaction.ID)
 			return nil
 		}
@@ -448,6 +565,7 @@ func handleTimeoutWithdrawalRequest(ctx context.Context, db *gorm.DB, record *mo
 	if err := rejectTimeoutWithdrawalRequest(context.Background(), db, record); err != nil {
 		return fmt.Errorf("ProcessWithdrawalRecords: cannot reject timeout withdrawal request due to %w", err)
 	}
+	logWithdrawalRecordFailed(record, ErrWithdrawalRequestTransactionUnconfirmedTimeout, nil)
 	log.Infof("ProcessWithdrawalRecords: rejected timeout withdrawal record %d before blockchain transaction creation", record.ID)
 	return nil
 }
@@ -474,6 +592,7 @@ func processWithdrawalRecordWithRetry(ctx context.Context, db *gorm.DB, record *
 		}
 		log.Errorf("ProcessWithdrawalRecords: process withdrawal record %d error %v", record.ID, err)
 		if IsWithdrawalRequestError(err) {
+			logWithdrawalRecordFailed(record, err, nil)
 			return err
 		}
 
