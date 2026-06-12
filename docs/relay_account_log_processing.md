@@ -45,9 +45,12 @@ For each fetched batch, the wallet MUST validate:
 - For `Deposit`, payload MUST be valid JSON and include `tx_hash` and `network`.
 - For `Deposit`, the wallet MUST independently verify the transaction on chain before balance apply:
   - transaction exists and is successful
-  - transaction receiver equals configured relay deposit address
-  - transaction sender equals log `address`
-  - transaction value equals log `amount`
+  - native deposit transaction receiver equals configured relay deposit address
+  - native deposit transaction sender equals log `address`
+  - native deposit transaction value equals log `amount`
+  - ERC20 deposit receipt contains a configured-token `Transfer` event to configured relay deposit address
+  - ERC20 deposit `Transfer` sender equals log `address` and is not the zero address
+  - ERC20 deposit `Transfer` amount equals log `amount`
 - Per-log max amount threshold MUST be enforced for all balance-applied types except `Deposit` and `VestingRelease`.
 - Per-address log count threshold MUST be enforced using only non-ignored logs.
 - New-address count threshold MUST be enforced using only non-ignored logs.

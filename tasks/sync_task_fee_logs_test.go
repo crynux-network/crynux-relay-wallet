@@ -180,6 +180,7 @@ type depositRPCState struct {
 	receiptStatus string
 	blockNumber   uint64
 	blockTime     uint64
+	receiptLogs   []any
 }
 
 func zeroBloomHex() string {
@@ -200,6 +201,10 @@ func newDepositRPCServer(t *testing.T, state depositRPCState) *httptest.Server {
 		}
 
 		result := any(nil)
+		receiptLogs := state.receiptLogs
+		if receiptLogs == nil {
+			receiptLogs = []any{}
+		}
 		switch request.Method {
 		case "eth_getTransactionCount":
 			result = "0x0"
@@ -215,7 +220,7 @@ func newDepositRPCServer(t *testing.T, state depositRPCState) *httptest.Server {
 				"gasUsed":           "0x5208",
 				"effectiveGasPrice": "0x1",
 				"contractAddress":   nil,
-				"logs":              []any{},
+				"logs":              receiptLogs,
 				"logsBloom":         zeroBloomHex(),
 				"status":            state.receiptStatus,
 				"type":              "0x0",
@@ -266,6 +271,10 @@ func newDepositRPCServer(t *testing.T, state depositRPCState) *httptest.Server {
 }
 
 func initDepositValidationConfig(t *testing.T, network string, rpcEndpoint string, depositAddress common.Address) {
+	initDepositValidationConfigWithToken(t, network, rpcEndpoint, depositAddress, config.TokenTypeNative, "")
+}
+
+func initDepositValidationConfigWithToken(t *testing.T, network string, rpcEndpoint string, depositAddress common.Address, tokenType string, tokenAddress string) {
 	t.Helper()
 
 	privateKey, err := crypto.GenerateKey()
@@ -279,13 +288,18 @@ func initDepositValidationConfig(t *testing.T, network string, rpcEndpoint strin
 	accountAddress := crypto.PubkeyToAddress(privateKey.PublicKey)
 
 	configDir := t.TempDir()
+	tokenAddressConfig := ""
+	if tokenAddress != "" {
+		tokenAddressConfig = fmt.Sprintf("    token_address: %s\n", tokenAddress)
+	}
 	configContent := fmt.Sprintf(`
 environment: debug
 blockchains:
   %s:
     rps: 100
     rpc_endpoint: %s
-    token_type: native
+    token_type: %s
+%s
     gas_limit: 21000
     gas_limit_buffer_percent: 20
     max_fee_per_gas: 100000000000
@@ -307,7 +321,7 @@ relay:
 tasks:
   sync_task_fee_logs:
     deposit_max_age_seconds: 3600
-`, network, rpcEndpoint, accountAddress.Hex(), filepath.ToSlash(privateKeyFile), filepath.ToSlash(privateKeyFile), depositAddress.Hex())
+`, network, rpcEndpoint, tokenType, tokenAddressConfig, accountAddress.Hex(), filepath.ToSlash(privateKeyFile), filepath.ToSlash(privateKeyFile), depositAddress.Hex())
 	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(configContent), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -332,6 +346,31 @@ func validateDepositForStateWithDepositAddress(t *testing.T, state depositRPCSta
 	initDepositValidationConfig(t, network, server.URL, depositAddress)
 	eventLog.Payload = fmt.Sprintf(`{"tx_hash":"%s","network":"%s"}`, state.txHash.Hex(), network)
 	return validateDepositLog(context.Background(), eventLog)
+}
+
+func validateERC20DepositForState(t *testing.T, state depositRPCState, eventLog relay_api.TaskFeeLog, depositAddress common.Address, tokenAddress common.Address) error {
+	t.Helper()
+
+	network := fmt.Sprintf("deposit_test_%d", time.Now().UnixNano())
+	server := newDepositRPCServer(t, state)
+	defer server.Close()
+	initDepositValidationConfigWithToken(t, network, server.URL, depositAddress, config.TokenTypeERC20, tokenAddress.Hex())
+	eventLog.Payload = fmt.Sprintf(`{"tx_hash":"%s","network":"%s"}`, state.txHash.Hex(), network)
+	return validateDepositLog(context.Background(), eventLog)
+}
+
+func erc20TransferReceiptLog(txHash common.Hash, tokenAddress common.Address, fromAddress common.Address, toAddress common.Address, amount *big.Int) map[string]any {
+	return map[string]any{
+		"address":          tokenAddress.Hex(),
+		"topics":           []string{erc20TransferTopic.Hex(), addressTopic(fromAddress.Hex()).Hex(), addressTopic(toAddress.Hex()).Hex()},
+		"data":             fmt.Sprintf("0x%064x", amount),
+		"blockNumber":      "0x10",
+		"transactionHash":  txHash.Hex(),
+		"transactionIndex": "0x0",
+		"blockHash":        common.HexToHash("0x100").Hex(),
+		"logIndex":         "0x0",
+		"removed":          false,
+	}
 }
 
 func TestValidateDepositLogAcceptsRawTransfer(t *testing.T) {
@@ -472,6 +511,64 @@ func TestValidateDepositLogRejectsRawTransferMismatches(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestValidateDepositLogAcceptsERC20TransferFromEventAddress(t *testing.T) {
+	txHash := common.HexToHash("0x1234")
+	eventAddress := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	sponsoredSender := common.HexToAddress("0x3333333333333333333333333333333333333333")
+	depositAddress := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	tokenAddress := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	amount := big.NewInt(42)
+
+	err := validateERC20DepositForState(t, depositRPCState{
+		txHash:        txHash,
+		from:          sponsoredSender,
+		to:            tokenAddress,
+		value:         big.NewInt(0),
+		input:         "0x1234",
+		receiptStatus: "0x1",
+		blockNumber:   16,
+		blockTime:     uint64(time.Now().Unix()),
+		receiptLogs: []any{
+			erc20TransferReceiptLog(txHash, tokenAddress, eventAddress, depositAddress, amount),
+		},
+	}, relay_api.TaskFeeLog{
+		Address: eventAddress.Hex(),
+		Amount:  amount.String(),
+		Type:    relay_api.TaskFeeLogTypeDeposit,
+	}, depositAddress, tokenAddress)
+	if err != nil {
+		t.Fatalf("validateDepositLog failed: %v", err)
+	}
+}
+
+func TestValidateDepositLogRejectsERC20ZeroFromAddress(t *testing.T) {
+	txHash := common.HexToHash("0x1234")
+	depositAddress := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	tokenAddress := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	amount := big.NewInt(42)
+
+	err := validateERC20DepositForState(t, depositRPCState{
+		txHash:        txHash,
+		from:          common.HexToAddress("0x3333333333333333333333333333333333333333"),
+		to:            tokenAddress,
+		value:         big.NewInt(0),
+		input:         "0x1234",
+		receiptStatus: "0x1",
+		blockNumber:   16,
+		blockTime:     uint64(time.Now().Unix()),
+		receiptLogs: []any{
+			erc20TransferReceiptLog(txHash, tokenAddress, common.Address{}, depositAddress, amount),
+		},
+	}, relay_api.TaskFeeLog{
+		Address: common.Address{}.Hex(),
+		Amount:  amount.String(),
+		Type:    relay_api.TaskFeeLogTypeDeposit,
+	}, depositAddress, tokenAddress)
+	if !errors.Is(err, ErrTaskFeeDepositTxMismatch) {
+		t.Fatalf("expected ErrTaskFeeDepositTxMismatch, got %v", err)
 	}
 }
 
