@@ -21,17 +21,23 @@ For each synced batch, the wallet validates deposits before any balance update i
 2. Parse deposit payload (`tx_hash`, `network`).
 3. Query blockchain transaction receipt by `tx_hash`.
 4. Verify receipt status is successful.
-5. Query raw transaction transfer fields by `tx_hash` using `eth_getTransactionByHash`.
-6. Verify raw transaction `to` equals configured `relay.deposit_address`.
-7. Verify raw transaction `from` equals event `address`.
-8. Verify raw transaction `value` equals event `amount`.
-9. Verify raw transaction `input` is `0x`, so only ordinary native transfers are accepted as deposits.
-10. Query the transaction block header and verify transaction age does not exceed configured `tasks.sync_task_fee_logs.deposit_max_age_seconds`.
-11. Persist with unique key `(network, tx_hash)` and fail-fast on duplicate via database constraint.
+5. Select validation rules by configured network token type.
+6. For native-token networks, query raw transaction transfer fields by `tx_hash` using `eth_getTransactionByHash`.
+7. For native-token networks, verify raw transaction `to` equals configured `relay.deposit_address`.
+8. For native-token networks, verify raw transaction `from` equals event `address`.
+9. For native-token networks, verify raw transaction `value` equals event `amount`.
+10. For native-token networks, verify raw transaction `input` is `0x`, so only ordinary native transfers are accepted as deposits.
+11. For ERC20-token networks, verify the receipt contains a `Transfer(address,address,uint256)` log emitted by the configured token contract.
+12. For ERC20-token networks, verify the indexed `to` address equals configured `relay.deposit_address`.
+13. For ERC20-token networks, verify the indexed `from` address equals event `address`.
+14. For ERC20-token networks, verify the indexed `from` address is not the zero address.
+15. For ERC20-token networks, verify the transfer amount equals event `amount`.
+16. Query the transaction block header and verify transaction age does not exceed configured `tasks.sync_task_fee_logs.deposit_max_age_seconds`.
+17. Persist with unique key `(network, tx_hash)` and fail-fast on duplicate via database constraint.
 
 If all validations pass, the deposit is marked as accepted for persistence.
 
-The wallet MUST NOT decode the full transaction into a typed Ethereum transaction for deposit validation. The wallet MUST reject the deposit if raw transaction fields are unavailable, malformed, or inconsistent with the event log.
+The wallet MUST NOT decode the full transaction into a typed Ethereum transaction for deposit validation. For native deposits, the wallet MUST reject the deposit if raw transaction fields are unavailable, malformed, or inconsistent with the event log. For ERC20 deposits, the wallet MUST reject the deposit if receipt log fields are unavailable, malformed, or inconsistent with the event log.
 
 ## Rejection Policy
 

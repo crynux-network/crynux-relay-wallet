@@ -237,7 +237,7 @@ func validateDepositLog(ctx context.Context, eventLog relay_api.TaskFeeLog) erro
 	case config.TokenTypeNative:
 		return validateNativeDepositLog(ctx, client, receipt, txHash, eventLog, amount)
 	case config.TokenTypeERC20:
-		return validateERC20DepositLog(ctx, client, receipt, txHash, eventLog, amount, blockchainConfig.TokenAddress)
+		return validateERC20DepositLog(ctx, client, receipt, eventLog, amount, blockchainConfig.TokenAddress)
 	default:
 		return blockchain.ErrBlockchainNotFound
 	}
@@ -276,17 +276,7 @@ func validateNativeDepositLog(ctx context.Context, client *blockchain.Blockchain
 	return nil
 }
 
-func validateERC20DepositLog(ctx context.Context, client *blockchain.BlockchainClient, receipt *types.Receipt, txHash common.Hash, eventLog relay_api.TaskFeeLog, amount *big.Int, tokenAddress string) error {
-	transfer, err := client.GetTransactionTransfer(ctx, txHash)
-	if errors.Is(err, ethereum.NotFound) {
-		return fmt.Errorf("deposit transaction not found: %s", txHash.Hex())
-	}
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(transfer.From.Hex(), eventLog.Address) {
-		return ErrTaskFeeDepositTxMismatch
-	}
+func validateERC20DepositLog(ctx context.Context, client *blockchain.BlockchainClient, receipt *types.Receipt, eventLog relay_api.TaskFeeLog, amount *big.Int, tokenAddress string) error {
 	for _, receiptLog := range receipt.Logs {
 		if len(receiptLog.Topics) != 3 ||
 			receiptLog.Topics[0] != erc20TransferTopic ||
@@ -295,7 +285,9 @@ func validateERC20DepositLog(ctx context.Context, client *blockchain.BlockchainC
 			len(receiptLog.Data) != 32 {
 			continue
 		}
-		if !strings.EqualFold(common.BytesToAddress(receiptLog.Topics[1].Bytes()).Hex(), eventLog.Address) {
+		fromAddress := common.BytesToAddress(receiptLog.Topics[1].Bytes()).Hex()
+		if fromAddress == (common.Address{}).Hex() ||
+			!strings.EqualFold(fromAddress, eventLog.Address) {
 			continue
 		}
 		logAmount := new(big.Int).SetBytes(receiptLog.Data)
