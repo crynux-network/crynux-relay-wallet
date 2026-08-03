@@ -36,7 +36,9 @@ blockchains:
     max_retries: 3
     retry_interval: 3
     receipt_wait_time: 30
+    receipt_confirmation_blocks: 1
     sent_transaction_count_limit: 200
+    max_withdrawals_per_day: 10
   crynux-on-base-sepolia:
     rps: 20
     rpc_endpoint: "https://json-rpc.base-sepolia.crynux.io"
@@ -54,7 +56,9 @@ blockchains:
     max_retries: 3
     retry_interval: 3
     receipt_wait_time: 30
+    receipt_confirmation_blocks: 1
     sent_transaction_count_limit: 200
+    max_withdrawals_per_day: 10
 relay:
   api:
     host: "http://crynux_relay:8080"
@@ -73,8 +77,8 @@ tasks:
     interval_seconds: 5
     batch_size: 100
     min_withdrawal_amount: 1
-    max_withdrawals_per_address_per_day: 10
   process_withdrawal_requests:
     interval_seconds: 5
     batch_size: 10
     timeout: 300
+    cancellation_settlement_timeout_seconds: 30
